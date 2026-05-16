@@ -36,7 +36,7 @@ async def send_signal_alert(signal: dict):
             f"  {primary['ticker']} {primary['type'].upper()}",
             f"  Strike: {primary['strike_note']}",
             f"  Expiry: {primary['expiry_note']}",
-            f"  Why: {primary['reasoning'][:120]}",
+            f"  Why: {primary['reasoning'][:300]}",
             "",
         ]
 

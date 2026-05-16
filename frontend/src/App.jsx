@@ -4,17 +4,17 @@ const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 const score_color = (s) => s >= 80 ? "#4ade80" : s >= 65 ? "#fbbf24" : "#f87171";
 const score_emoji = (s) => s >= 85 ? "🔴" : s >= 72 ? "🟡" : "⚪";
-const cat_colors  = {
+const cat_colors = {
   restructuring: { bg: "#1a1a3a", color: "#a78bfa" },
-  acquisition:   { bg: "#1a2a1a", color: "#4ade80" },
-  partnership:   { bg: "#0d2010", color: "#34d399" },
-  earnings:      { bg: "#1f1500", color: "#fbbf24" },
-  insider:       { bg: "#0a1f1f", color: "#22d3ee" },
-  regulatory:    { bg: "#1f0a0a", color: "#f87171" },
-  macro_policy:  { bg: "#1a1500", color: "#fb923c" },
-  ai_tech:       { bg: "#0d1a2a", color: "#60a5fa" },
-  quantum:       { bg: "#1a0a2a", color: "#c084fc" },
-  distress:      { bg: "#2a0a0a", color: "#ef4444" },
+  acquisition: { bg: "#1a2a1a", color: "#4ade80" },
+  partnership: { bg: "#0d2010", color: "#34d399" },
+  earnings: { bg: "#1f1500", color: "#fbbf24" },
+  insider: { bg: "#0a1f1f", color: "#22d3ee" },
+  regulatory: { bg: "#1f0a0a", color: "#f87171" },
+  macro_policy: { bg: "#1a1500", color: "#fb923c" },
+  ai_tech: { bg: "#0d1a2a", color: "#60a5fa" },
+  quantum: { bg: "#1a0a2a", color: "#c084fc" },
+  distress: { bg: "#2a0a0a", color: "#ef4444" },
 };
 
 function usePoll(fn, ms = 30000) {
@@ -82,8 +82,8 @@ function SignalDetail({ signal }) {
     </div>
   );
 
-  const plays   = signal.options_plays || [];
-  const chain   = signal.reasoning_chain || [];
+  const plays = signal.options_plays || [];
+  const chain = signal.reasoning_chain || [];
   const ripples = signal.ripple_tickers || [];
 
   return (
@@ -129,13 +129,19 @@ function SignalDetail({ signal }) {
                 </span>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                {[["STRIKE", play.strike_note], ["EXPIRY", play.expiry_note], ["DAYS OUT", play.days_out], ["WHY", play.reasoning?.slice(0, 60)]].map(([k, v]) => (
+                {[["STRIKE", play.strike_note], ["EXPIRY", play.expiry_note], ["DAYS OUT", play.days_out]].map(([k, v]) => (
                   <div key={k} style={{ background: "#0a0a12", borderRadius: 6, padding: "6px 8px" }}>
                     <div style={{ fontSize: 9, color: "#555", letterSpacing: 2, marginBottom: 2 }}>{k}</div>
                     <div style={{ fontSize: 11, color: "#e2e8f0" }}>{v || "—"}</div>
                   </div>
                 ))}
               </div>
+              {play.reasoning && (
+                <div style={{ background: "#0a0a12", borderRadius: 6, padding: "8px 10px", marginTop: 6 }}>
+                  <div style={{ fontSize: 9, color: "#555", letterSpacing: 2, marginBottom: 4 }}>WHY</div>
+                  <div style={{ fontSize: 11, color: "#aaa", lineHeight: 1.6 }}>{play.reasoning}</div>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -170,10 +176,10 @@ function SignalDetail({ signal }) {
 }
 
 export default function App() {
-  const [stats,   setStats]   = useState(null);
+  const [stats, setStats] = useState(null);
   const [signals, setSignals] = useState([]);
   const [selected, setSelected] = useState(null);
-  const [filter,  setFilter]  = useState("all");
+  const [filter, setFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(null);
 
@@ -187,13 +193,13 @@ export default function App() {
       setSignals(Array.isArray(sg) ? sg : []);
       setLastUpdate(new Date());
       setLoading(false);
-    } catch(e) { console.error(e); }
+    } catch (e) { console.error(e); }
   }, []);
 
   usePoll(fetchAll, 30000);
 
   const filtered = signals.filter(s => {
-    if (filter === "all")  return true;
+    if (filter === "all") return true;
     if (filter === "high") return s.score >= 80;
     return s.event_category === filter;
   });
@@ -229,11 +235,11 @@ export default function App() {
 
       {/* Stats */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, padding: "16px 24px" }}>
-        <StatCard label="SIGNALS TODAY"   value={stats?.signals_today ?? 0}   sub="generated"           color="#a78bfa" />
-        <StatCard label="HIGH CONVICTION" value={stats?.high_conviction ?? 0} sub="score ≥ 80"           color="#4ade80" />
-        <StatCard label="EVENTS SCANNED"  value={(stats?.events_scanned ?? 0).toLocaleString()} sub="all sources" color="#60a5fa" />
-        <StatCard label="AVG SCORE"       value={stats?.avg_score_today ?? 0} sub="today"                color="#fbbf24" />
-        <StatCard label="TOP SECTOR"      value={stats?.top_sector ?? "—"}    sub="this week"            color="#22d3ee" />
+        <StatCard label="SIGNALS TODAY" value={stats?.signals_today ?? 0} sub="generated" color="#a78bfa" />
+        <StatCard label="HIGH CONVICTION" value={stats?.high_conviction ?? 0} sub="score ≥ 80" color="#4ade80" />
+        <StatCard label="EVENTS SCANNED" value={(stats?.events_scanned ?? 0).toLocaleString()} sub="all sources" color="#60a5fa" />
+        <StatCard label="AVG SCORE" value={stats?.avg_score_today ?? 0} sub="today" color="#fbbf24" />
+        <StatCard label="TOP SECTOR" value={stats?.top_sector ?? "—"} sub="this week" color="#22d3ee" />
       </div>
 
       {/* Filter bar */}
