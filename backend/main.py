@@ -19,7 +19,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://market-intelligence-gold-phi.vercel.app",
+        "http://localhost:5173",
+        "http://localhost:8001",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
