@@ -9,7 +9,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 load_dotenv()
 
 from database import init_db
-from routers.api import router
+from routers.api import router as api_router
+from routers.lookup import router as lookup_router
 
 app = FastAPI(
     title="Market Intelligence API",
@@ -19,16 +20,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://market-intelligence-gold-phi.vercel.app",
-        "http://localhost:5173",
-        "http://localhost:8001",
-    ],
+    allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(router)
+app.include_router(api_router)
+app.include_router(lookup_router)
 
 scheduler = AsyncIOScheduler(timezone="US/Eastern")
 
@@ -38,10 +37,9 @@ async def startup():
 
     from core.orchestrator import run_full_scan, run_breaking_scan, run_weekly_synthesis
 
-    scan_interval = int(os.getenv("SCAN_INTERVAL_MINUTES", 60))
+    scan_interval     = int(os.getenv("SCAN_INTERVAL_MINUTES", 60))
     breaking_interval = int(os.getenv("BREAKING_SCAN_MINUTES", 15))
 
-    # Full hourly scan — all sources + Claude analysis
     scheduler.add_job(
         run_full_scan,
         trigger=IntervalTrigger(minutes=scan_interval),
@@ -50,7 +48,6 @@ async def startup():
         replace_existing=True,
     )
 
-    # Breaking scan every 15 min — lightweight tripwire only
     scheduler.add_job(
         run_breaking_scan,
         trigger=IntervalTrigger(minutes=breaking_interval),
@@ -59,7 +56,6 @@ async def startup():
         replace_existing=True,
     )
 
-    # Weekly synthesis — Sunday 8pm ET
     scheduler.add_job(
         run_weekly_synthesis,
         trigger=CronTrigger(day_of_week="sun", hour=20, minute=0, timezone="US/Eastern"),
@@ -73,7 +69,6 @@ async def startup():
     print(f"[App] Full scan every {scan_interval} min · Breaking scan every {breaking_interval} min")
     print("[App] Weekly synthesis every Sunday 8pm ET")
 
-    # Run an initial scan on startup
     import asyncio
     asyncio.create_task(run_full_scan())
 
@@ -94,4 +89,5 @@ def root():
         "health":  "/health",
         "signals": "/api/signals",
         "stats":   "/api/stats",
+        "lookup":  "/api/lookup",
     }
