@@ -186,11 +186,27 @@ function SearchBar({ onResult }) {
   const [context, setContext] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [step, setStep] = useState(0);
+
+  const STEPS = [
+    "Fetching recent news...",
+    "Scanning SEC filings...",
+    "Sending to Claude for analysis...",
+    "Building options recommendations...",
+    "Almost done...",
+  ];
 
   const handleSearch = async () => {
     if (!ticker.trim()) return;
     setLoading(true);
     setError("");
+    setStep(0);
+
+    // Cycle through steps to show progress
+    const interval = setInterval(() => {
+      setStep(prev => (prev < STEPS.length - 1 ? prev + 1 : prev));
+    }, 4000);
+
     try {
       const resp = await fetch(`${API}/api/lookup`, {
         method: "POST",
@@ -201,9 +217,11 @@ function SearchBar({ onResult }) {
       if (data.error) setError(data.error);
       else onResult(data);
     } catch (e) {
-      setError("Failed to connect");
+      setError("Failed to connect to scanner");
     } finally {
+      clearInterval(interval);
       setLoading(false);
+      setStep(0);
     }
   };
 
@@ -228,7 +246,20 @@ function SearchBar({ onResult }) {
           </button>
           {error && <div style={{ fontSize: 11, color: "#f87171" }}>{error}</div>}
         </div>
-        {loading && <div style={{ fontSize: 10, color: "#555" }}>Fetching news for {ticker.toUpperCase()} and running Claude analysis (~15 seconds)...</div>}
+        {loading && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#a78bfa", animation: "pulse 1s infinite" }} />
+              <div style={{ fontSize: 11, color: "#a78bfa" }}>{STEPS[step]}</div>
+            </div>
+            <div style={{ display: "flex", gap: 4 }}>
+              {STEPS.map((_, i) => (
+                <div key={i} style={{ height: 2, flex: 1, borderRadius: 1, background: i <= step ? "#a78bfa" : "#1e1e35", transition: "background 0.5s" }} />
+              ))}
+            </div>
+            <div style={{ fontSize: 10, color: "#555", marginTop: 4 }}>Analysing {ticker.toUpperCase()} — typically 15–25 seconds</div>
+          </div>
+        )}
       </div>
     </div>
   );
