@@ -5,7 +5,6 @@ client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 MODEL  = "claude-sonnet-4-6"
 
 def _clean_json(text: str) -> str:
-    """Strip markdown code fences Claude sometimes adds despite instructions."""
     text = text.strip()
     if text.startswith("```"):
         parts = text.split("```")
@@ -28,79 +27,129 @@ Score 0-100 where:
 65-79 = good signal, worth analysing
 80-100 = strong signal, act fast
 
-IMPORTANT: Respond ONLY with raw JSON, no markdown, no code fences: {{"score": 75, "reason": "one sentence"}}"""
+IMPORTANT: Respond ONLY with raw JSON, no markdown: {{"score": 75, "reason": "one sentence"}}"""
 
     for attempt in range(3):
         try:
             response = client.messages.create(
-                model=MODEL,
-                max_tokens=100,
+                model=MODEL, max_tokens=100,
                 messages=[{"role": "user", "content": prompt}]
             )
-            text = _clean_json(response.content[0].text)
-            return json.loads(text)
+            return json.loads(_clean_json(response.content[0].text))
         except Exception as e:
             if attempt < 2:
                 time.sleep(2 ** attempt)
                 continue
             return {"score": 0, "reason": str(e)[:100]}
-    return {"score": 0, "reason": "max retries exceeded"}
+    return {"score": 0, "reason": "max retries"}
 
 
 def deep_analysis(headline: str, summary: str, category: str,
-                  tickers: list, quick_score_val: float, source: str) -> dict:
+                  tickers: list, quick_score_val: float, source: str,
+                  position_context: dict = None, portfolio_summary: str = None) -> dict:
     import datetime
     today = datetime.date.today().isoformat()
 
-    prompt = f"""You are a sophisticated event-driven investment analyst. Analyse this market event and provide specific, actionable options recommendations.
+    # Build position context string
+    pos_str = ""
+    if position_context:
+        held = {t: ctx for t, ctx in position_context.items() if ctx.get("held")}
+        not_held = {t: ctx for t, ctx in position_context.items() if not ctx.get("held")}
+        if held:
+            pos_str += "\nHELD POSITIONS MENTIONED:\n"
+            for t, ctx in held.items():
+                pos_str += f"  {t}: {ctx['shares']} shares, ${ctx['equity']:,} equity, avg cost ${ctx['avg_cost']}\n"
+                if ctx.get("correlated_holdings"):
+                    pos_str += f"    → Also holds correlated: {', '.join(ctx['correlated_holdings'])}\n"
+        if not_held:
+            corr_info = [(t, ctx['correlated_holdings']) for t, ctx in not_held.items() if ctx.get('correlated_holdings')]
+            if corr_info:
+                pos_str += "\nCORRELATION ALERTS:\n"
+                for t, corr in corr_info:
+                    pos_str += f"  {t} news affects held positions: {', '.join(corr)}\n"
 
-Today's date: {today}
-Event source: {source}
-Event category: {category}
+    prompt = f"""You are a sophisticated event-driven investment analyst managing a personal portfolio. Analyse this market event with full awareness of existing positions.
+
+Today: {today}
+Source: {source}
+Category: {category}
 Tickers mentioned: {', '.join(tickers) if tickers else 'unknown'}
 Headline: {headline}
 Detail: {summary[:600] if summary else 'N/A'}
+{pos_str}
 
 Your task:
-1. Reason through the full event chain (1st order to 2nd order to 3rd order effects)
-2. Identify the PRIMARY ticker to trade and any RIPPLE tickers
-3. Recommend specific options plays with strike prices and expiry dates
-4. For expiry: always pick catalyst date + 10-15 day buffer minimum
-5. Identify ripple plays
+1. Reason through event chain (1st → 2nd → 3rd order effects)
+2. For HELD positions: say whether to ADD, HOLD, or REDUCE. Never recommend opening a new position if already held — recommend adding to it or hedging it.
+3. For CORRELATED positions: flag how this news affects other holdings
+4. For NEW positions: recommend if worth buying
+5. Include specific options plays with strike, expiry, entry, profit target, stop loss, time stop
+6. Flag if IV is elevated (don't buy options when IV is high — wait for it to drop)
+7. Include hedge suggestion if the news is bearish for a held position
 
-Rules:
-- Prefer calls on bullish events, puts on bearish
-- For restructuring/layoffs: bullish call (cost savings to EPS beat)
-- For partnerships: call on both partners + suppliers
-- For regulatory action: put on target, call on competitors
-- For insider buys: call on the stock, near-term expiry
+IMPORTANT: Respond ONLY with raw valid JSON. No markdown. No code fences. Start directly with {{
 
-IMPORTANT: Respond ONLY with raw valid JSON. No markdown. No code fences. Start your response directly with the opening brace.
-
-{{"score": 82, "event_category": "acquisition", "primary_ticker": "WBA", "sector": "Retail Pharmacy", "reasoning_chain": [{{"step": "Event", "text": "describe event"}}, {{"step": "Impact", "text": "describe impact"}}, {{"step": "Catalyst", "text": "describe catalyst"}}, {{"step": "Edge", "text": "describe edge"}}], "options_plays": [{{"ticker": "WBA", "type": "put", "role": "primary", "strike_note": "$12 (ATM)", "expiry_note": "Jun 20 2025", "days_out": 30, "reasoning": "PE buyout delisting risk"}}], "act_by_hours": 24, "catalyst_date": "2025-06-01", "iv_environment": "high", "risk_level": "high", "ripple_tickers": ["CVS", "RAD"], "summary_one_line": "one line summary"}}"""
+{{"score": 82, "event_category": "partnership", "primary_ticker": "NVDA", "sector": "semiconductor",
+"reasoning_chain": [
+  {{"step": "Event", "text": "describe event"}},
+  {{"step": "1st Order", "text": "immediate impact"}},
+  {{"step": "2nd Order", "text": "downstream effects"}},
+  {{"step": "3rd Order", "text": "sector ripple"}},
+  {{"step": "Edge", "text": "why not fully priced"}}
+],
+"portfolio_impact": {{
+  "held_positions": [
+    {{"ticker": "NVDA", "action": "ADD", "rationale": "this news strengthens the thesis", "current_equity": 5687}}
+  ],
+  "correlation_alerts": [
+    {{"ticker": "AMD", "held": true, "impact": "bullish", "note": "NVDA partnership lifts AMD too"}}
+  ],
+  "hedge_suggestion": null
+}},
+"options_plays": [
+  {{
+    "ticker": "NVDA",
+    "type": "call",
+    "role": "primary",
+    "strike_note": "$230 (3% OTM)",
+    "expiry_note": "Jul 18 2026",
+    "days_out": 63,
+    "reasoning": "full reasoning",
+    "entry_strategy": "Buy on a pullback to $220 support or at open if gapping up moderately",
+    "profit_target": "Sell at $260 (30% gain on option) or when stock reaches $245",
+    "stop_loss": "Exit if option loses 40% or stock closes below $215",
+    "time_stop": "Exit by Jun 30 if thesis hasn't played out",
+    "iv_warning": "IV currently normal — good time to buy. Avoid if IV spikes above 60."
+  }}
+],
+"act_by_hours": 48,
+"catalyst_date": "2026-07-01",
+"iv_environment": "normal",
+"risk_level": "medium",
+"ripple_tickers": ["AMD", "SMCI", "CRWV"],
+"summary_one_line": "one line thesis summary"
+}}"""
 
     for attempt in range(3):
         try:
             response = client.messages.create(
-                model=MODEL,
-                max_tokens=1400,
+                model=MODEL, max_tokens=2000,
                 messages=[{"role": "user", "content": prompt}]
             )
-            text = _clean_json(response.content[0].text)
-            return json.loads(text)
+            return json.loads(_clean_json(response.content[0].text))
         except Exception as e:
             if attempt < 2:
                 time.sleep(2 ** attempt)
                 continue
             try:
                 raw = response.content[0].text
-                match = re.search(r'\{.*\}', raw, re.DOTALL)
-                if match:
-                    return json.loads(match.group())
+                m = re.search(r'\{.*\}', raw, re.DOTALL)
+                if m:
+                    return json.loads(m.group())
             except Exception:
                 pass
             return {"score": 0, "error": str(e)[:200]}
-    return {"score": 0, "error": "max retries exceeded"}
+    return {"score": 0, "error": "max retries"}
 
 
 def weekly_synthesis(signals: list) -> dict:
@@ -108,31 +157,30 @@ def weekly_synthesis(signals: list) -> dict:
         return {"insights": "No signals this week.", "keyword_weights": {}}
 
     signals_text = json.dumps([{
-        "headline": s["headline"],
-        "category": s["event_category"],
-        "score": s["score"],
-        "primary_ticker": s["primary_ticker"],
-        "sector": s["sector"],
+        "headline": s["headline"], "category": s["event_category"],
+        "score": s["score"], "primary_ticker": s["primary_ticker"], "sector": s["sector"],
     } for s in signals[:50]], indent=2)
 
-    prompt = f"""You are reviewing this week's market intelligence signals.
+    prompt = f"""Review this week's market intelligence signals for a tech/AI/quantum/space focused portfolio.
 
-Signals this week:
+Signals:
 {signals_text}
 
 IMPORTANT: Respond ONLY with raw valid JSON. No markdown. No code fences.
 
-{{"top_sectors": ["Semiconductors"], "top_categories": ["partnership"], "keyword_weights": {{"layoff": 1.2, "partnership": 1.4}}, "emerging_themes": ["AI buildout"], "insights": "summary here", "recommended_watchlist_additions": ["SMCI"]}}"""
+{{"top_sectors": ["Semiconductors"], "top_categories": ["partnership"],
+"keyword_weights": {{"layoff": 1.2, "partnership": 1.4}},
+"emerging_themes": ["AI buildout"],
+"insights": "2-3 sentence summary",
+"recommended_watchlist_additions": ["SMCI"]}}"""
 
     for attempt in range(3):
         try:
             response = client.messages.create(
-                model=MODEL,
-                max_tokens=600,
+                model=MODEL, max_tokens=600,
                 messages=[{"role": "user", "content": prompt}]
             )
-            text = _clean_json(response.content[0].text)
-            return json.loads(text)
+            return json.loads(_clean_json(response.content[0].text))
         except Exception as e:
             if attempt < 2:
                 time.sleep(2 ** attempt)
