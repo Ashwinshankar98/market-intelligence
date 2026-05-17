@@ -20,6 +20,8 @@ ALWAYS_WATCH = set([
     "VOO","VGT","SPY","QQQ","SMH","EWY","VYM","SCHD","IBIT",
 ])
 
+WATCHLIST = list(ALWAYS_WATCH)
+
 # ── Categories that ALWAYS pass Tier 1 regardless of ticker ──────────────────
 # These are sector-wide signals worth knowing about even for unknown companies
 ALWAYS_PASS_CATEGORIES = {
