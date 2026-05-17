@@ -5,14 +5,15 @@ from database import get_connection
 router = APIRouter(prefix="/api", tags=["intelligence"])
 
 @router.get("/signals")
-def get_signals(limit: int = 50, min_score: float = 0):
+def get_signals(limit: int = 200, min_score: float = 0, days: int = 7):
     conn = get_connection()
     rows = conn.execute("""
         SELECT * FROM signals
         WHERE score >= ?
+        AND created_at >= datetime('now', ? || ' days')
         ORDER BY created_at DESC
         LIMIT ?
-    """, (min_score, limit)).fetchall()
+    """, (min_score, f"-{days}", limit)).fetchall()
     conn.close()
     signals = []
     for r in rows:
@@ -112,3 +113,14 @@ async def trigger_scan():
     from core.orchestrator import run_full_scan
     signals = await run_full_scan()
     return {"triggered": True, "signals_generated": len(signals)}
+
+@router.get("/weights")
+def get_active_weights():
+    """Current category weights — updated every Sunday by weekly synthesis."""
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT category, weight, previous, direction, reason, updated_at
+        FROM active_weights ORDER BY weight DESC
+    """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]

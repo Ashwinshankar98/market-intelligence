@@ -46,39 +46,73 @@ def init_db():
         risk_level      TEXT,
         ripple_tickers  TEXT,
         telegram_sent   INTEGER DEFAULT 0,
+        is_manual_lookup INTEGER DEFAULT 0,
         created_at      TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS sector_activity (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        sector      TEXT NOT NULL,
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        sector       TEXT NOT NULL,
         signal_count INTEGER DEFAULT 0,
-        avg_score   REAL,
-        week_start  TEXT NOT NULL,
-        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        avg_score    REAL,
+        week_start   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS weekly_synthesis (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        week_start      TEXT NOT NULL,
-        top_sectors     TEXT,
-        keyword_weights TEXT,
-        insights        TEXT,
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        week_start       TEXT NOT NULL,
+        top_sectors      TEXT,
+        keyword_weights  TEXT,
+        insights         TEXT,
         signals_reviewed INTEGER,
-        created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at       TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    -- URL dedup — prevents same article being fetched twice
+    -- URL dedup
     CREATE TABLE IF NOT EXISTS processed_urls (
-        url         TEXT PRIMARY KEY,
+        url          TEXT PRIMARY KEY,
         processed_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    -- Headline dedup — prevents same story from different sources being re-analysed
+    -- Headline dedup
     CREATE TABLE IF NOT EXISTS processed_headlines (
         headline_hash TEXT PRIMARY KEY,
         processed_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- Active keyword weights — updated every Sunday by weekly synthesis
+    CREATE TABLE IF NOT EXISTS active_weights (
+        category     TEXT PRIMARY KEY,
+        weight       REAL NOT NULL DEFAULT 1.0,
+        previous     REAL NOT NULL DEFAULT 1.0,
+        direction    TEXT,              -- 'up', 'down', 'stable'
+        reason       TEXT,
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Seed default weights for all categories
+    INSERT OR IGNORE INTO active_weights (category, weight, previous, direction, reason) VALUES
+        ('semiconductor',   1.0, 1.0, 'stable', 'default'),
+        ('memory',          1.0, 1.0, 'stable', 'default'),
+        ('ai_tech',         1.0, 1.0, 'stable', 'default'),
+        ('ai_infra',        1.0, 1.0, 'stable', 'default'),
+        ('optoelectronics', 1.0, 1.0, 'stable', 'default'),
+        ('quantum',         1.0, 1.0, 'stable', 'default'),
+        ('space',           1.0, 1.0, 'stable', 'default'),
+        ('rare_earth',      1.0, 1.0, 'stable', 'default'),
+        ('robotics',        1.0, 1.0, 'stable', 'default'),
+        ('ev_tech',         1.0, 1.0, 'stable', 'default'),
+        ('hedge_fund',      1.0, 1.0, 'stable', 'default'),
+        ('portfolio_move',  1.0, 1.0, 'stable', 'default'),
+        ('investment',      1.0, 1.0, 'stable', 'default'),
+        ('earnings',        1.0, 1.0, 'stable', 'default'),
+        ('restructuring',   1.0, 1.0, 'stable', 'default'),
+        ('acquisition',     1.0, 1.0, 'stable', 'default'),
+        ('partnership',     1.0, 1.0, 'stable', 'default'),
+        ('regulatory',      1.0, 1.0, 'stable', 'default'),
+        ('macro_policy',    1.0, 1.0, 'stable', 'default'),
+        ('distress',        1.0, 1.0, 'stable', 'default');
 
     """)
     conn.commit()

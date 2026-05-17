@@ -274,17 +274,147 @@ async def run_weekly_synthesis():
 
     from datetime import datetime, timedelta
     week_start = (datetime.utcnow() - timedelta(days=7)).date().isoformat()
+
+    # Save synthesis to DB
     conn = get_connection()
     conn.execute("""
         INSERT INTO weekly_synthesis (week_start, top_sectors, keyword_weights, insights, signals_reviewed)
         VALUES (?, ?, ?, ?, ?)
     """, (week_start,
           json.dumps(synthesis.get("top_sectors", [])),
-          json.dumps(synthesis.get("keyword_weights", {})),
+          json.dumps(synthesis.get("weight_updates", [])),
           synthesis.get("insights", ""),
           len(signals)))
     conn.commit()
     conn.close()
 
+    # ── Wire up weights — apply Claude's recommendations ─────────────────────
+    weight_updates = synthesis.get("weight_updates", [])
+    if weight_updates:
+        _apply_weight_updates(weight_updates)
+        print(f"[Weekly] Applied {len(weight_updates)} weight updates for next week")
+    else:
+        print("[Weekly] No weight updates returned")
+
+    # ── Send Telegram summary ─────────────────────────────────────────────────
     await send_weekly_summary(synthesis, len(signals))
+
+    # ── Run cleanup after synthesis ───────────────────────────────────────────
+    await run_weekly_cleanup()
+
     print(f"[Weekly] Done. Reviewed {len(signals)} signals.")
+
+
+# ── Weekly cleanup — auto-archive old low-priority signals ────────────────────
+
+async def run_weekly_cleanup():
+    """
+    Delete old signals that are noise — non-priority sectors, low score, old.
+    Keeps: priority sectors, score >= 80, manual lookups, all weekly synthesis.
+    """
+    from core.portfolio import PRIORITY_SECTORS
+    print("[Cleanup] Running weekly signal cleanup...")
+
+    conn = get_connection()
+
+    # Delete non-priority, low-score signals older than 7 days
+    result = conn.execute("""
+        DELETE FROM signals
+        WHERE created_at < datetime('now', '-7 days')
+        AND score < 80
+        AND is_manual_lookup = 0
+        AND sector NOT IN (
+            'semiconductor','memory','ai_tech','ai_infra','optoelectronics',
+            'quantum','space','rare_earth','robotics','ev_tech',
+            'hedge_fund','portfolio_move','investment'
+        )
+    """)
+    deleted_low = result.rowcount
+
+    # Delete priority sector signals older than 30 days if score < 72
+    result = conn.execute("""
+        DELETE FROM signals
+        WHERE created_at < datetime('now', '-30 days')
+        AND score < 72
+        AND is_manual_lookup = 0
+    """)
+    deleted_old = result.rowcount
+
+    # Clean up old processed headlines older than 30 days
+    conn.execute("DELETE FROM processed_headlines WHERE processed_at < datetime('now', '-30 days')")
+
+    # Clean up old processed URLs older than 30 days
+    conn.execute("DELETE FROM processed_urls WHERE processed_at < datetime('now', '-30 days')")
+
+    conn.commit()
+    conn.close()
+
+    print(f"[Cleanup] Removed {deleted_low} low-priority signals (>7 days)")
+    print(f"[Cleanup] Removed {deleted_old} old low-score signals (>30 days)")
+    print(f"[Cleanup] Cleared old dedup caches")
+
+
+def _apply_weight_updates(weight_updates: list):
+    """
+    Apply the weight updates from weekly synthesis to the active_weights table.
+    Enforces all hard constraints.
+    """
+    if not weight_updates:
+        return
+
+    PROTECTED_FLOOR = {
+        "hedge_fund": 1.0, "portfolio_move": 1.0,
+        "semiconductor": 0.8, "memory": 0.8, "quantum": 0.8,
+        "ai_tech": 0.8, "space": 0.8, "optoelectronics": 0.8,
+        "ai_infra": 0.8, "rare_earth": 0.8,
+    }
+    MAX_WEIGHT  = 2.0
+    MIN_WEIGHT  = 0.5
+    MAX_CHANGE  = 0.3
+
+    conn = get_connection()
+    current = {r["category"]: r["weight"] for r in
+               conn.execute("SELECT category, weight FROM active_weights").fetchall()}
+
+    updates_applied = []
+    for update in weight_updates:
+        cat        = update.get("category", "")
+        new_weight = float(update.get("new_weight", 1.0))
+        direction  = update.get("direction", "stable")
+        reason     = update.get("reason", "")
+
+        if not cat:
+            continue
+
+        old_weight = current.get(cat, 1.0)
+
+        # Enforce max change per week
+        change = new_weight - old_weight
+        if abs(change) > MAX_CHANGE:
+            new_weight = old_weight + (MAX_CHANGE if change > 0 else -MAX_CHANGE)
+
+        # Enforce floor for protected categories
+        floor = PROTECTED_FLOOR.get(cat, MIN_WEIGHT)
+        new_weight = max(floor, min(MAX_WEIGHT, new_weight))
+        new_weight = round(new_weight, 2)
+
+        conn.execute("""
+            INSERT INTO active_weights (category, weight, previous, direction, reason, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(category) DO UPDATE SET
+                previous  = weight,
+                weight    = excluded.weight,
+                direction = excluded.direction,
+                reason    = excluded.reason,
+                updated_at= excluded.updated_at
+        """, (cat, new_weight, old_weight, direction, reason[:200]))
+
+        updates_applied.append(f"{cat}: {old_weight:.2f} → {new_weight:.2f} ({direction})")
+
+    conn.commit()
+    conn.close()
+
+    if updates_applied:
+        print(f"[Weights] Updated {len(updates_applied)} category weights:")
+        for u in updates_applied:
+            print(f"  {u}")

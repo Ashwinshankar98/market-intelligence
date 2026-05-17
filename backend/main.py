@@ -58,7 +58,7 @@ def _last_scan_was_recent(minutes: int = 50) -> bool:
 async def startup():
     init_db()
 
-    from core.orchestrator import run_full_scan, run_breaking_scan, run_weekly_synthesis
+    from core.orchestrator import run_full_scan, run_breaking_scan, run_weekly_synthesis, run_weekly_cleanup
 
     scan_interval     = int(os.getenv("SCAN_INTERVAL_MINUTES", 60))
     breaking_interval = int(os.getenv("BREAKING_SCAN_MINUTES", 15))
@@ -72,7 +72,7 @@ async def startup():
         replace_existing=True,
     )
 
-    # ── Breaking scan — lightweight, no Claude unless critical ────────────────
+    # ── Breaking scan — zero Claude cost ─────────────────────────────────────
     scheduler.add_job(
         run_breaking_scan,
         trigger=IntervalTrigger(minutes=breaking_interval),
@@ -81,12 +81,21 @@ async def startup():
         replace_existing=True,
     )
 
-    # ── Weekly synthesis — Sunday 8pm ET ─────────────────────────────────────
+    # ── Weekly synthesis + weight updates — Sunday 8pm ET ────────────────────
     scheduler.add_job(
         run_weekly_synthesis,
         trigger=CronTrigger(day_of_week="sun", hour=20, minute=0, timezone="US/Eastern"),
         id="weekly_synthesis",
         name="Sunday weekly synthesis",
+        replace_existing=True,
+    )
+
+    # ── Weekly cleanup — Sunday 8:30pm ET (runs after synthesis) ─────────────
+    scheduler.add_job(
+        run_weekly_cleanup,
+        trigger=CronTrigger(day_of_week="sun", hour=20, minute=30, timezone="US/Eastern"),
+        id="weekly_cleanup",
+        name="Sunday weekly cleanup",
         replace_existing=True,
     )
 

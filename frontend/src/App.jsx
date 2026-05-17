@@ -14,7 +14,19 @@ const cat_colors = {
   ai_tech: { bg: "#0d1a2a", color: "#60a5fa" },
   quantum: { bg: "#1a0a2a", color: "#c084fc" },
   distress: { bg: "#2a0a0a", color: "#ef4444" },
+  hedge_fund: { bg: "#2a1a00", color: "#fb923c" },
+  portfolio_move: { bg: "#1a0a2a", color: "#c084fc" },
+  investment: { bg: "#0a2a1a", color: "#34d399" },
+  space: { bg: "#0a0a2a", color: "#60a5fa" },
+  optoelectronics: { bg: "#1a2a1a", color: "#4ade80" },
+  rare_earth: { bg: "#2a1a0a", color: "#fb923c" },
 };
+
+const PRIORITY_SECTORS = new Set([
+  "semiconductor", "memory", "ai_tech", "ai_infra", "optoelectronics",
+  "quantum", "space", "rare_earth", "robotics", "ev_tech",
+  "hedge_fund", "portfolio_move", "investment", "ai_tech",
+]);
 
 function usePoll(fn, ms = 30000) {
   useEffect(() => { fn(); const id = setInterval(fn, ms); return () => clearInterval(id); }, []);
@@ -294,24 +306,25 @@ export default function App() {
   const [signals, setSignals] = useState([]);
   const [selected, setSelected] = useState(null);
   const [filter, setFilter] = useState("all");
+  const [timeRange, setTimeRange] = useState("7d");
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(null);
   const [lookupResults, setLookupResults] = useState([]);
   const isMobile = useIsMobile();
-  const showDetail = isMobile ? selected !== null : true;
 
   const fetchAll = useCallback(async () => {
     try {
+      const days = timeRange === "7d" ? 7 : timeRange === "30d" ? 30 : 365;
       const [st, sg] = await Promise.all([
         fetch(`${API}/api/stats`).then(r => r.json()),
-        fetch(`${API}/api/signals?limit=50`).then(r => r.json()),
+        fetch(`${API}/api/signals?limit=200&days=${days}`).then(r => r.json()),
       ]);
       setStats(st);
       setSignals(Array.isArray(sg) ? sg : []);
       setLastUpdate(new Date());
       setLoading(false);
     } catch (e) { console.error(e); }
-  }, []);
+  }, [timeRange]);
 
   usePoll(fetchAll, 30000);
 
@@ -326,6 +339,7 @@ export default function App() {
     if (filter === "all") return true;
     if (filter === "high") return s.score >= 80;
     if (filter === "lookup") return s.is_manual_lookup;
+    if (filter === "portfolio") return PRIORITY_SECTORS.has(s.sector) || s.score >= 90 || s.is_manual_lookup;
     return s.event_category === filter;
   });
   const categories = [...new Set(signals.map(s => s.event_category).filter(Boolean))];
@@ -353,7 +367,18 @@ export default function App() {
             <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ade80", animation: "pulse 2s infinite" }} />
             <div style={{ fontSize: 9, color: "#4ade80", letterSpacing: 2 }}>LIVE</div>
           </div>
-          <div style={{ fontSize: 9, color: "#555" }}>{lastUpdate?.toLocaleTimeString()}</div>
+          <div style={{ fontSize: 9, color: "#555", marginBottom: 6 }}>{lastUpdate?.toLocaleTimeString()}</div>
+          <div style={{ display: "flex", gap: 4 }}>
+            {["7d", "30d", "all"].map(t => (
+              <button key={t} onClick={() => setTimeRange(t)} style={{
+                padding: "3px 8px", fontSize: 9, letterSpacing: 1, fontFamily: "inherit",
+                background: timeRange === t ? "#1e1e35" : "transparent",
+                color: timeRange === t ? "#4ade80" : "#555",
+                border: `0.5px solid ${timeRange === t ? "#4ade80" : "#1e1e35"}`,
+                borderRadius: 4, cursor: "pointer", textTransform: "uppercase",
+              }}>{t}</button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -371,9 +396,9 @@ export default function App() {
 
       {/* Filter bar */}
       <div style={{ padding: "10px 16px", display: "flex", gap: 6, flexWrap: "wrap", overflowX: "auto" }}>
-        {["all", "high", "lookup", ...categories].map(f => (
-          <button key={f} onClick={() => setFilter(f)} style={{ padding: "4px 10px", fontSize: 9, letterSpacing: 1, fontFamily: "inherit", background: filter === f ? "#1e1e35" : "transparent", color: filter === f ? (f === "lookup" ? "#fbbf24" : "#a78bfa") : "#555", border: `0.5px solid ${filter === f ? (f === "lookup" ? "#fbbf24" : "#a78bfa") : "#1e1e35"}`, borderRadius: 20, cursor: "pointer", textTransform: "uppercase", whiteSpace: "nowrap" }}>
-            {f === "high" ? "HIGH CONVICTION" : f === "lookup" ? `LOOKUPS (${lookupResults.length})` : f}
+        {["all", "high", "portfolio", "lookup", ...categories].map(f => (
+          <button key={f} onClick={() => setFilter(f)} style={{ padding: "4px 10px", fontSize: 9, letterSpacing: 1, fontFamily: "inherit", background: filter === f ? "#1e1e35" : "transparent", color: filter === f ? (f === "lookup" ? "#fbbf24" : f === "portfolio" ? "#4ade80" : "#a78bfa") : "#555", border: `0.5px solid ${filter === f ? (f === "lookup" ? "#fbbf24" : f === "portfolio" ? "#4ade80" : "#a78bfa") : "#1e1e35"}`, borderRadius: 20, cursor: "pointer", textTransform: "uppercase", whiteSpace: "nowrap" }}>
+            {f === "high" ? "HIGH CONVICTION" : f === "lookup" ? `LOOKUPS (${lookupResults.length})` : f === "portfolio" ? "MY SECTORS" : f}
           </button>
         ))}
       </div>
