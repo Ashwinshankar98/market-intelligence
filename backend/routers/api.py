@@ -124,3 +124,15 @@ def get_active_weights():
     """).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+@router.post("/ask-play")
+async def ask_about_play(body: dict):
+    """Ask Claude a specific question about an options play."""
+    from core.analyser import ask_about_play as _ask
+    play           = body.get("play", {})
+    question       = body.get("question", "")
+    signal_context = body.get("signal_context", {})
+    if not question or not play:
+        return {"error": "play and question are required"}
+    answer = _ask(play, question, signal_context)
+    return {"answer": answer}

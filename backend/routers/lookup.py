@@ -139,61 +139,79 @@ async def lookup_ticker(body: dict):
         h = HOLDINGS[ticker]
         pos_note = f"\nYOU HOLD {ticker}: {h['shares']} shares, ${h['equity']:,} equity, avg cost ${h['avg_cost']}"
 
-    prompt = f"""You are a sophisticated event-driven investment analyst managing a personal tech/AI/quantum/space focused portfolio. Analyse {ticker} ({company}) and provide a complete investment analysis with specific options recommendations including full entry AND exit strategy.
+    # Fetch current price
+    import yfinance as yf
+    current_price = None
+    try:
+        hist = yf.Ticker(ticker).history(period="1d")
+        if not hist.empty:
+            current_price = round(float(hist["Close"].iloc[-1]), 2)
+    except Exception:
+        pass
+    price_str = f"Current live price: ${current_price}" if current_price else "Current price: fetch from market"
+
+    prompt = f"""You are a sophisticated event-driven investment analyst. Analyse {ticker} ({company}) with the latest available information.
 
 Today: {today}
 Ticker: {ticker}
+{price_str}
 User context: {context if context else 'General analysis requested'}
 {pos_note}
 
 Recent news:
 {news_text}
 
-Your task:
-1. Synthesise news into a clear investment thesis (bullish/bearish/neutral)
-2. Reason through event chain if there is a catalyst
-3. For each options play include exact strike, expiry, entry strategy, profit target, stop loss, time stop, and IV warning
-4. If the user holds the stock say ADD, HOLD, or REDUCE
-5. List ripple tickers that are affected
+Tasks:
+1. Buy/Hold/Sell with TWO sections: analyst_facts (cite actual news/analyst opinions from news provided) and claude_opinion (your own view)
+2. Reason through event chain (1st/2nd/3rd order)
+3. For each option play: use the live price for strike, include entry, profit target, stop loss, time stop, IV warning, risk_reward_score (1-10, 10=best), max_loss_pct, confidence
+4. If held: ADD/HOLD/REDUCE with analyst_facts AND claude_rationale separately
+5. Complete all fields fully, no truncation
 
-CRITICAL: Keep your response concise. Maximum 2 options plays. Keep reasoning_chain to 4 steps max. Keep all text fields under 150 characters. This ensures the response fits within token limits.
-
-IMPORTANT: Respond ONLY with raw valid JSON. No markdown. No code fences. Start directly with open brace.
+IMPORTANT: Raw JSON only. No markdown. Start with open brace.
 
 {{"score": 82, "event_category": "earnings", "primary_ticker": "{ticker}", "sector": "Technology",
+"current_price": {current_price or 0},
+"buy_hold_sell": {{
+  "recommendation": "BUY",
+  "analyst_facts": "cite actual analyst upgrades, price targets, news facts",
+  "claude_opinion": "separate claude assessment"
+}},
 "reasoning_chain": [
-  {{"step": "Event", "text": "what happened in 100 chars or less"}},
-  {{"step": "Impact", "text": "immediate market impact in 100 chars or less"}},
-  {{"step": "Catalyst", "text": "next catalyst in 100 chars or less"}},
-  {{"step": "Edge", "text": "why not fully priced in 100 chars or less"}}
+  {{"step": "Event", "text": "full description"}},
+  {{"step": "1st Order", "text": "immediate impact"}},
+  {{"step": "2nd Order", "text": "downstream effects"}},
+  {{"step": "Edge", "text": "why not fully priced"}}
 ],
 "portfolio_impact": {{
-  "held_positions": [{{"ticker": "{ticker}", "action": "ADD", "rationale": "brief reason", "current_equity": 0}}],
+  "held_positions": [{{"ticker": "{ticker}", "action": "ADD", "analyst_facts": "news-based reason", "claude_rationale": "claude view", "current_equity": 0}}],
   "correlation_alerts": [],
   "hedge_suggestion": null
 }},
 "options_plays": [
   {{
-    "ticker": "{ticker}",
-    "type": "call",
-    "role": "primary",
-    "strike_note": "$X (Y% OTM)",
-    "expiry_note": "Month DD YYYY",
+    "ticker": "{ticker}", "type": "call", "role": "primary",
+    "current_price": {current_price or 0},
+    "strike_note": "use live price to calculate OTM strike",
+    "expiry_note": "Month DD YYYY — reason for expiry",
     "days_out": 45,
-    "reasoning": "why this play in 120 chars",
-    "entry_strategy": "when and where to enter in 120 chars",
-    "profit_target": "exact price or percent to take profit",
-    "stop_loss": "exact price or percent to cut loss",
-    "time_stop": "exit by this date if thesis fails",
-    "iv_warning": "current IV assessment in 100 chars"
+    "reasoning": "complete reasoning without truncation",
+    "entry_strategy": "complete entry instructions",
+    "profit_target": "exact target with price levels",
+    "stop_loss": "exact stop with price levels",
+    "time_stop": "exit date if thesis fails",
+    "iv_warning": "IV environment and whether good time to buy",
+    "risk_reward_score": 7,
+    "max_loss_pct": 40,
+    "confidence": 75
   }}
 ],
 "act_by_hours": 48,
 "catalyst_date": "{today}",
 "iv_environment": "normal",
 "risk_level": "medium",
-"ripple_tickers": ["TICK1", "TICK2"],
-"summary_one_line": "one line thesis under 120 chars",
+"ripple_tickers": [],
+"summary_one_line": "complete one-line thesis",
 "news_used": {json.dumps([a['title'][:80] for a in articles[:4]])}
 }}"""
 
@@ -203,7 +221,7 @@ IMPORTANT: Respond ONLY with raw valid JSON. No markdown. No code fences. Start 
         try:
             response = client.messages.create(
                 model=MODEL,
-                max_tokens=4000,
+                max_tokens=5000,
                 messages=[{"role": "user", "content": prompt}]
             )
             text   = _clean_json(response.content[0].text)
