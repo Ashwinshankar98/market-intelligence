@@ -49,10 +49,11 @@ function useIsMobile() {
 }
 
 function Tag({ cat }) {
+  if (!cat) return null;
   const c = cat_colors[cat] || { bg: "#1a1a1a", color: "#888" };
   return (
     <span style={{ background: c.bg, color: c.color, fontSize: 9, padding: "2px 8px", borderRadius: 4, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", whiteSpace: "nowrap" }}>
-      {cat?.replace(/_/g, " ")}
+      {cat.replace(/_/g, " ")}
     </span>
   );
 }
@@ -372,7 +373,7 @@ function SignalDetail({ signal, onBack, isMobile }) {
 
       {/* Meta */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14 }}>
-        {[["ACT BY", `${signal.act_by_hours}h`], ["CATALYST", signal.catalyst_date || "TBD"], ["IV ENV", signal.iv_environment?.toUpperCase()], ["RISK", signal.risk_level?.toUpperCase()]].map(([k, v]) => (
+        {[["ACT BY", signal.act_by_hours ? `${signal.act_by_hours}h` : null], ["CATALYST", signal.catalyst_date || null], ["IV ENV", signal.iv_environment?.toUpperCase() || null], ["RISK", signal.risk_level?.toUpperCase() || null]].map(([k, v]) => (
           <div key={k} style={{ background: "#080810", borderRadius: 6, padding: "8px 10px" }}>
             <div style={{ fontSize: 9, color: "#555", letterSpacing: 2, marginBottom: 2 }}>{k}</div>
             <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 500 }}>{v || "—"}</div>
