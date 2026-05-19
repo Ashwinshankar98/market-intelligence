@@ -22,7 +22,14 @@ def _get_price_safe(ticker: str) -> float | None:
 
     def _fetch():
         import yfinance as yf
-        hist = yf.Ticker(ticker).history(period="5d")
+        t = yf.Ticker(ticker)
+        try:
+            p = t.fast_info.last_price
+            if p and p > 0:
+                return round(float(p), 2)
+        except Exception:
+            pass
+        hist = t.history(period="5d")
         if not hist.empty:
             return round(float(hist["Close"].iloc[-1]), 2)
         return None
