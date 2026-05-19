@@ -15,19 +15,22 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
 def _get_price_safe(ticker: str) -> float | None:
     """
-    Fetch latest price directly from Yahoo Finance HTTP API.
-    No yfinance library — fast, reliable, works 24/7.
+    Fetch price using yfinance — was working fine before.
+    yfinance domains are allowed on Railway unlike direct Yahoo Finance HTTP.
     """
+    import concurrent.futures
+
+    def _fetch():
+        import yfinance as yf
+        hist = yf.Ticker(ticker).history(period="5d")
+        if not hist.empty:
+            return round(float(hist["Close"].iloc[-1]), 2)
+        return None
+
     try:
-        import urllib.request
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=5d"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data   = json.loads(resp.read())
-            closes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
-            closes = [c for c in closes if c is not None]
-            if closes:
-                return round(float(closes[-1]), 2)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(_fetch)
+            return future.result(timeout=5.0)
     except Exception:
         pass
     return None
@@ -71,15 +74,14 @@ async def _do_lookup(body: dict):
     import datetime
     today = datetime.date.today().isoformat()
 
-    # Fetch news and price in parallel — price has 3s hard timeout
+    # Fetch news and price in parallel
     news_task  = asyncio.create_task(_fetch_top_news(ticker))
     price_task = asyncio.get_event_loop().run_in_executor(None, _get_price_safe, ticker)
 
-    # Wait max 8s for both — don't let price hang the whole request
     try:
         articles, current_price = await asyncio.wait_for(
             asyncio.gather(news_task, price_task, return_exceptions=True),
-            timeout=8.0
+            timeout=10.0
         )
     except asyncio.TimeoutError:
         articles      = []
@@ -89,7 +91,7 @@ async def _do_lookup(body: dict):
     if isinstance(current_price, Exception): current_price = None
 
     price_val = current_price if current_price else 0
-    price_str = f"${current_price}" if current_price else "not available (market closed)"
+    price_str = f"${current_price}" if current_price else "estimate from your knowledge"
 
     news_lines = [f"[{a.get('date','')}] {a.get('title','')}" for a in (articles or [])[:5]]
     news_str   = "\n".join(news_lines) if news_lines else "No recent news found."
