@@ -1,69 +1,116 @@
-import os, json, re, asyncio, time
+import os, json, re, asyncio
 import httpx
 import feedparser
 from fastapi import APIRouter
-from core.analyser import _clean_json, _salvage_json
-from core.portfolio import get_position_context, HOLDINGS
+from core.analyser import _clean_json
+from core.portfolio import get_holdings_summary, get_position_context, HOLDINGS
 import anthropic
 
 router = APIRouter(prefix="/api", tags=["lookup"])
 
-client       = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-MODEL        = "claude-sonnet-4-6"
+client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+MODEL  = "claude-sonnet-4-6"
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
+async def fetch_news_fast(ticker: str, company: str) -> list:
+    """Fetch news from multiple sources in parallel with short timeouts."""
+    articles = []
 
-def _get_price_safe(ticker: str) -> float | None:
-    """
-    Fetch price using yfinance — was working fine before.
-    yfinance domains are allowed on Railway unlike direct Yahoo Finance HTTP.
-    """
-    import concurrent.futures
+    async def fetch_rss(query: str):
+        try:
+            url = f"https://news.google.com/rss/search?q={query.replace(' ', '+')}&hl=en-US&gl=US&ceid=US:en"
+            feed = feedparser.parse(url)
+            return [{"title": e.get("title",""), "summary": (e.get("summary","") or "")[:200], "date": e.get("published","")} for e in feed.entries[:5]]
+        except Exception:
+            return []
 
-    def _fetch():
-        import yfinance as yf
-        hist = yf.Ticker(ticker).history(period="5d")
-        if not hist.empty:
-            return round(float(hist["Close"].iloc[-1]), 2)
-        return None
+    async def fetch_newsapi():
+        if not NEWS_API_KEY:
+            return []
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                resp = await c.get("https://newsapi.org/v2/everything", params={
+                    "q": f"{ticker} {company}", "apiKey": NEWS_API_KEY,
+                    "language": "en", "sortBy": "publishedAt", "pageSize": 5,
+                })
+                return [{"title": a.get("title",""), "summary": (a.get("description") or "")[:200], "date": a.get("publishedAt","")} for a in resp.json().get("articles", [])]
+        except Exception:
+            return []
 
+    # Run all fetches in parallel with 8 second total timeout
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(_fetch)
-            return future.result(timeout=5.0)
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                fetch_rss(f"{ticker} stock news"),
+                fetch_rss(f"{company} latest"),
+                fetch_newsapi(),
+                return_exceptions=True
+            ),
+            timeout=8.0
+        )
+        for r in results:
+            if isinstance(r, list):
+                articles.extend(r)
+    except asyncio.TimeoutError:
+        print(f"[Lookup] News fetch timed out for {ticker} — proceeding with what we have")
+
+    # Deduplicate
+    seen, unique = set(), []
+    for a in articles:
+        if a["title"] and a["title"] not in seen:
+            seen.add(a["title"])
+            unique.append(a)
+
+    return unique[:10]
+
+
+def _salvage_json(raw: str) -> dict:
+    """Try multiple strategies to extract valid JSON from a truncated response."""
+    raw = _clean_json(raw)
+
+    # Strategy 1 — find last complete closing brace
+    try:
+        depth = 0
+        last_valid = 0
+        for i, ch in enumerate(raw):
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    last_valid = i + 1
+        if last_valid:
+            return json.loads(raw[:last_valid])
     except Exception:
         pass
-    return None
 
-
-async def _fetch_top_news(ticker: str, max_articles: int = 5) -> list:
-    """Single RSS fetch — fast, no NewsAPI dependency."""
+    # Strategy 2 — regex extraction
     try:
-        url  = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
-        feed = feedparser.parse(url)
-        return [
-            {"title": e.get("title", "")[:100], "date": e.get("published", "")[:10]}
-            for e in feed.entries[:max_articles]
-        ]
+        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if match:
+            return json.loads(match.group())
     except Exception:
-        return []
+        pass
+
+    # Strategy 3 — try fixing truncated string by closing open brackets
+    try:
+        fixed = raw
+        open_braces   = raw.count('{') - raw.count('}')
+        open_brackets = raw.count('[') - raw.count(']')
+        # Close any open string first
+        if fixed.count('"') % 2 != 0:
+            fixed += '"'
+        fixed += ']' * max(0, open_brackets)
+        fixed += '}' * max(0, open_braces)
+        return json.loads(fixed)
+    except Exception:
+        pass
+
+    return {}
 
 
 @router.post("/lookup")
 async def lookup_ticker(body: dict):
-    try:
-        return await asyncio.wait_for(_do_lookup(body), timeout=50.0)
-    except asyncio.TimeoutError:
-        return {
-            "error": "Analysis timed out — try again",
-            "score": 0,
-            "is_manual_lookup": True,
-            "primary_ticker": body.get("ticker", "").upper(),
-            "headline": f"{body.get('ticker','').upper()} analysis timed out",
-        }
-
-
-async def _do_lookup(body: dict):
     ticker  = body.get("ticker", "").upper().strip()
     company = body.get("company", ticker)
     context = body.get("context", "")
@@ -71,102 +118,122 @@ async def _do_lookup(body: dict):
     if not ticker:
         return {"error": "ticker is required"}
 
+    # Fetch news with fast parallel fetching
+    articles = await fetch_news_fast(ticker, company)
+
+    news_text = "\n".join([
+        f"- [{a.get('date','')[:10]}] {a['title']}: {a['summary']}"
+        for a in articles
+    ]) if articles else "No recent news found. Analyse based on general market knowledge."
+
+    # Get portfolio context
+    pos_ctx   = get_position_context([ticker])
+    portfolio = get_holdings_summary()
+
     import datetime
     today = datetime.date.today().isoformat()
 
-    # Fetch news and price in parallel
-    news_task  = asyncio.create_task(_fetch_top_news(ticker))
-    price_task = asyncio.get_event_loop().run_in_executor(None, _get_price_safe, ticker)
-
-    try:
-        articles, current_price = await asyncio.wait_for(
-            asyncio.gather(news_task, price_task, return_exceptions=True),
-            timeout=10.0
-        )
-    except asyncio.TimeoutError:
-        articles      = []
-        current_price = None
-
-    if isinstance(articles, Exception):      articles      = []
-    if isinstance(current_price, Exception): current_price = None
-
-    price_val = current_price if current_price else 0
-    price_str = f"${current_price}" if current_price else "estimate from your knowledge"
-
-    news_lines = [f"[{a.get('date','')}] {a.get('title','')}" for a in (articles or [])[:5]]
-    news_str   = "\n".join(news_lines) if news_lines else "No recent news found."
-
+    # Build position note
     pos_note = ""
-    held_equity = 0
     if ticker in HOLDINGS:
         h = HOLDINGS[ticker]
-        pos_note    = f"YOU HOLD: {h['shares']} shares @ avg ${h['avg_cost']} (equity ${h['equity']:,})"
-        held_equity = h['equity']
+        pos_note = f"\nYOU HOLD {ticker}: {h['shares']} shares, ${h['equity']:,} equity, avg cost ${h['avg_cost']}"
 
-    prompt = f"""Analyse {ticker} for investment. Return ONLY raw JSON starting with {{
+    prompt = f"""You are a sophisticated event-driven investment analyst managing a personal tech/AI/quantum/space focused portfolio. Analyse {ticker} ({company}) and provide a complete investment analysis with specific options recommendations including full entry AND exit strategy.
 
-Date:{today} Price:{price_str}{f" Context:{context}" if context else ""}
+Today: {today}
+Ticker: {ticker}
+User context: {context if context else 'General analysis requested'}
 {pos_note}
 
-News headlines:
-{news_str}
+Recent news:
+{news_text}
 
-Return this exact JSON structure:
-{{
-  "score":82,"event_category":"earnings","primary_ticker":"{ticker}","sector":"Technology","current_price":{price_val},
-  "buy_hold_sell":{{"recommendation":"BUY","analyst_facts":"cite news sources above","claude_opinion":"your view"}},
-  "reasoning_chain":[
-    {{"step":"Situation","text":"current state"}},
-    {{"step":"Catalyst","text":"key upcoming event"}},
-    {{"step":"Risk","text":"main downside risk"}},
-    {{"step":"Edge","text":"why opportunity exists"}}
-  ],
-  "portfolio_impact":{{"held_positions":[{{"ticker":"{ticker}","action":"HOLD","analyst_facts":"reason","claude_rationale":"view","current_equity":{held_equity}}}],"correlation_alerts":[],"hedge_suggestion":null}},
-  "options_plays":[{{
-    "ticker":"{ticker}","type":"call","role":"primary","current_price":{price_val},
-    "strike_note":"strike % OTM","expiry_note":"Month DD YYYY","days_out":45,
-    "reasoning":"why","entry_strategy":"when to enter","profit_target":"target",
-    "stop_loss":"stop","time_stop":"exit date","iv_warning":"IV level",
-    "risk_reward_score":7,"max_loss_pct":40,"confidence":75
-  }}],
-  "act_by_hours":48,"catalyst_date":"{today}","iv_environment":"normal",
-  "risk_level":"medium","ripple_tickers":[],"summary_one_line":"thesis",
-  "news_used":{json.dumps([a.get('title','')[:60] for a in (articles or [])[:3]])}
+Your task:
+1. Synthesise news into a clear investment thesis (bullish/bearish/neutral)
+2. Reason through event chain if there is a catalyst
+3. For each options play include exact strike, expiry, entry strategy, profit target, stop loss, time stop, and IV warning
+4. If the user holds the stock say ADD, HOLD, or REDUCE
+5. List ripple tickers that are affected
+
+CRITICAL: Keep your response concise. Maximum 2 options plays. Keep reasoning_chain to 4 steps max. Keep all text fields under 150 characters. This ensures the response fits within token limits.
+
+IMPORTANT: Respond ONLY with raw valid JSON. No markdown. No code fences. Start directly with open brace.
+
+{{"score": 82, "event_category": "earnings", "primary_ticker": "{ticker}", "sector": "Technology",
+"reasoning_chain": [
+  {{"step": "Event", "text": "what happened in 100 chars or less"}},
+  {{"step": "Impact", "text": "immediate market impact in 100 chars or less"}},
+  {{"step": "Catalyst", "text": "next catalyst in 100 chars or less"}},
+  {{"step": "Edge", "text": "why not fully priced in 100 chars or less"}}
+],
+"portfolio_impact": {{
+  "held_positions": [{{"ticker": "{ticker}", "action": "ADD", "rationale": "brief reason", "current_equity": 0}}],
+  "correlation_alerts": [],
+  "hedge_suggestion": null
+}},
+"options_plays": [
+  {{
+    "ticker": "{ticker}",
+    "type": "call",
+    "role": "primary",
+    "strike_note": "$X (Y% OTM)",
+    "expiry_note": "Month DD YYYY",
+    "days_out": 45,
+    "reasoning": "why this play in 120 chars",
+    "entry_strategy": "when and where to enter in 120 chars",
+    "profit_target": "exact price or percent to take profit",
+    "stop_loss": "exact price or percent to cut loss",
+    "time_stop": "exit by this date if thesis fails",
+    "iv_warning": "current IV assessment in 100 chars"
+  }}
+],
+"act_by_hours": 48,
+"catalyst_date": "{today}",
+"iv_environment": "normal",
+"risk_level": "medium",
+"ripple_tickers": ["TICK1", "TICK2"],
+"summary_one_line": "one line thesis under 120 chars",
+"news_used": {json.dumps([a['title'][:80] for a in articles[:4]])}
 }}"""
 
+    import time
     response = None
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             response = client.messages.create(
                 model=MODEL,
-                max_tokens=2000,
-                timeout=40.0,
+                max_tokens=4000,
                 messages=[{"role": "user", "content": prompt}]
             )
             text   = _clean_json(response.content[0].text)
             result = json.loads(text)
             result["is_manual_lookup"] = True
             result["lookup_ticker"]    = ticker
+            result["lookup_company"]   = company
             return result
 
         except json.JSONDecodeError:
+            # Try to salvage truncated JSON
             try:
                 raw    = response.content[0].text if response else ""
                 result = _salvage_json(raw)
                 if result and result.get("primary_ticker"):
                     result["is_manual_lookup"] = True
                     result["lookup_ticker"]    = ticker
+                    result["lookup_company"]   = company
                     return result
             except Exception:
                 pass
-            if attempt < 1:
+            if attempt < 2:
                 time.sleep(1)
                 continue
 
         except Exception as e:
-            if attempt < 1:
+            if attempt < 2:
                 time.sleep(1)
                 continue
+            # Last resort salvage
             try:
                 if response:
                     result = _salvage_json(response.content[0].text)
@@ -176,26 +243,6 @@ Return this exact JSON structure:
                         return result
             except Exception:
                 pass
-            return {
-                "error": str(e)[:200], "score": 0,
-                "is_manual_lookup": True, "primary_ticker": ticker,
-                "headline": f"{ticker} analysis failed"
-            }
+            return {"error": f"Analysis failed: {str(e)[:100]}", "score": 0, "is_manual_lookup": True}
 
-    return {
-        "error": "Max retries", "score": 0,
-        "is_manual_lookup": True, "primary_ticker": ticker,
-        "headline": f"{ticker} analysis"
-    }
-
-
-@router.post("/ask-play")
-async def ask_about_play(body: dict):
-    from core.analyser import ask_about_play as _ask
-    play           = body.get("play", {})
-    question       = body.get("question", "")
-    signal_context = body.get("signal_context", {})
-    if not question or not play:
-        return {"error": "play and question are required"}
-    answer = _ask(play, question, signal_context)
-    return {"answer": answer}
+    return {"error": "Max retries exceeded", "score": 0, "is_manual_lookup": True}
