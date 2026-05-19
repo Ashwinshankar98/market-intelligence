@@ -1,24 +1,34 @@
-import os, json, re, asyncio
+import os, json, re, asyncio, time
 import httpx
 import feedparser
 from fastapi import APIRouter
-from core.analyser import _clean_json
+from core.analyser import _clean_json, _salvage_json
 from core.portfolio import get_holdings_summary, get_position_context, HOLDINGS
 import anthropic
 
 router = APIRouter(prefix="/api", tags=["lookup"])
 
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-MODEL  = "claude-sonnet-4-6"
-NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
+client      = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+MODEL       = "claude-sonnet-4-6"
+NEWS_API_KEY= os.getenv("NEWS_API_KEY", "")
+
+def _get_price(ticker: str) -> float | None:
+    """Fetch latest price from yfinance with timeout protection."""
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(ticker).history(period="5d")
+        if not hist.empty:
+            return round(float(hist["Close"].iloc[-1]), 2)
+    except Exception:
+        pass
+    return None
 
 async def fetch_news_fast(ticker: str, company: str) -> list:
-    """Fetch news from multiple sources in parallel with short timeouts."""
     articles = []
 
     async def fetch_rss(query: str):
         try:
-            url = f"https://news.google.com/rss/search?q={query.replace(' ', '+')}&hl=en-US&gl=US&ceid=US:en"
+            url  = f"https://news.google.com/rss/search?q={query.replace(' ', '+')}&hl=en-US&gl=US&ceid=US:en"
             feed = feedparser.parse(url)
             return [{"title": e.get("title",""), "summary": (e.get("summary","") or "")[:200], "date": e.get("published","")} for e in feed.entries[:5]]
         except Exception:
@@ -37,7 +47,6 @@ async def fetch_news_fast(ticker: str, company: str) -> list:
         except Exception:
             return []
 
-    # Run all fetches in parallel with 8 second total timeout
     try:
         results = await asyncio.wait_for(
             asyncio.gather(
@@ -52,9 +61,8 @@ async def fetch_news_fast(ticker: str, company: str) -> list:
             if isinstance(r, list):
                 articles.extend(r)
     except asyncio.TimeoutError:
-        print(f"[Lookup] News fetch timed out for {ticker} — proceeding with what we have")
+        pass
 
-    # Deduplicate
     seen, unique = set(), []
     for a in articles:
         if a["title"] and a["title"] not in seen:
@@ -62,51 +70,6 @@ async def fetch_news_fast(ticker: str, company: str) -> list:
             unique.append(a)
 
     return unique[:10]
-
-
-def _salvage_json(raw: str) -> dict:
-    """Try multiple strategies to extract valid JSON from a truncated response."""
-    raw = _clean_json(raw)
-
-    # Strategy 1 — find last complete closing brace
-    try:
-        depth = 0
-        last_valid = 0
-        for i, ch in enumerate(raw):
-            if ch == '{':
-                depth += 1
-            elif ch == '}':
-                depth -= 1
-                if depth == 0:
-                    last_valid = i + 1
-        if last_valid:
-            return json.loads(raw[:last_valid])
-    except Exception:
-        pass
-
-    # Strategy 2 — regex extraction
-    try:
-        match = re.search(r'\{.*\}', raw, re.DOTALL)
-        if match:
-            return json.loads(match.group())
-    except Exception:
-        pass
-
-    # Strategy 3 — try fixing truncated string by closing open brackets
-    try:
-        fixed = raw
-        open_braces   = raw.count('{') - raw.count('}')
-        open_brackets = raw.count('[') - raw.count(']')
-        # Close any open string first
-        if fixed.count('"') % 2 != 0:
-            fixed += '"'
-        fixed += ']' * max(0, open_brackets)
-        fixed += '}' * max(0, open_braces)
-        return json.loads(fixed)
-    except Exception:
-        pass
-
-    return {}
 
 
 @router.post("/lookup")
@@ -118,39 +81,27 @@ async def lookup_ticker(body: dict):
     if not ticker:
         return {"error": "ticker is required"}
 
-    # Fetch news with fast parallel fetching
-    articles = await fetch_news_fast(ticker, company)
+    # Fetch news and price in parallel
+    articles      = await fetch_news_fast(ticker, company)
+    current_price = _get_price(ticker)
 
     news_text = "\n".join([
         f"- [{a.get('date','')[:10]}] {a['title']}: {a['summary']}"
         for a in articles
     ]) if articles else "No recent news found. Analyse based on general market knowledge."
 
-    # Get portfolio context
-    pos_ctx   = get_position_context([ticker])
-    portfolio = get_holdings_summary()
-
-    import datetime
-    today = datetime.date.today().isoformat()
-
-    # Build position note
+    pos_ctx  = get_position_context([ticker])
     pos_note = ""
     if ticker in HOLDINGS:
         h = HOLDINGS[ticker]
         pos_note = f"\nYOU HOLD {ticker}: {h['shares']} shares, ${h['equity']:,} equity, avg cost ${h['avg_cost']}"
 
-    # Fetch current price
-    import yfinance as yf
-    current_price = None
-    try:
-        hist = yf.Ticker(ticker).history(period="1d")
-        if not hist.empty:
-            current_price = round(float(hist["Close"].iloc[-1]), 2)
-    except Exception:
-        pass
-    price_str = f"Current live price: ${current_price}" if current_price else "Current price: fetch from market"
+    import datetime
+    today       = datetime.date.today().isoformat()
+    price_str   = f"Current live price: ${current_price}" if current_price else "Current price: not available outside market hours"
+    price_val   = current_price if current_price else 0
 
-    prompt = f"""You are a sophisticated event-driven investment analyst. Analyse {ticker} ({company}) with the latest available information.
+    prompt = f"""You are a sophisticated event-driven investment analyst. Analyse {ticker} ({company}) and provide a complete investment analysis.
 
 Today: {today}
 Ticker: {ticker}
@@ -162,60 +113,75 @@ Recent news:
 {news_text}
 
 Tasks:
-1. Buy/Hold/Sell with TWO sections: analyst_facts (cite actual news/analyst opinions from news provided) and claude_opinion (your own view)
-2. Reason through event chain (1st/2nd/3rd order)
-3. For each option play: use the live price for strike, include entry, profit target, stop loss, time stop, IV warning, risk_reward_score (1-10, 10=best), max_loss_pct, confidence
-4. If held: ADD/HOLD/REDUCE with analyst_facts AND claude_rationale separately
-5. Complete all fields fully, no truncation
+1. Buy/Hold/Sell with TWO sections:
+   - analyst_facts: cite actual news/analyst upgrades/price targets from the news provided
+   - claude_opinion: your own separate assessment
+2. Reason through event chain (1st, 2nd, 3rd order effects)
+3. For each option play include: strike based on current price, expiry, entry, profit target, stop loss, time stop, IV warning, risk_reward_score 1-10, max_loss_pct, confidence
+4. If user holds the stock: ADD/HOLD/REDUCE with analyst_facts AND claude_rationale separately
+5. Complete all fields fully without truncation
 
-IMPORTANT: Raw JSON only. No markdown. Start with open brace.
+IMPORTANT: Respond ONLY with raw valid JSON. No markdown. No code fences. Start directly with open brace.
 
-{{"score": 82, "event_category": "earnings", "primary_ticker": "{ticker}", "sector": "Technology",
-"current_price": {current_price or 0},
-"buy_hold_sell": {{
-  "recommendation": "BUY",
-  "analyst_facts": "cite actual analyst upgrades, price targets, news facts",
-  "claude_opinion": "separate claude assessment"
-}},
-"reasoning_chain": [
-  {{"step": "Event", "text": "full description"}},
-  {{"step": "1st Order", "text": "immediate impact"}},
-  {{"step": "2nd Order", "text": "downstream effects"}},
-  {{"step": "Edge", "text": "why not fully priced"}}
-],
-"portfolio_impact": {{
-  "held_positions": [{{"ticker": "{ticker}", "action": "ADD", "analyst_facts": "news-based reason", "claude_rationale": "claude view", "current_equity": 0}}],
-  "correlation_alerts": [],
-  "hedge_suggestion": null
-}},
-"options_plays": [
-  {{
-    "ticker": "{ticker}", "type": "call", "role": "primary",
-    "current_price": {current_price or 0},
-    "strike_note": "use live price to calculate OTM strike",
-    "expiry_note": "Month DD YYYY — reason for expiry",
-    "days_out": 45,
-    "reasoning": "complete reasoning without truncation",
-    "entry_strategy": "complete entry instructions",
-    "profit_target": "exact target with price levels",
-    "stop_loss": "exact stop with price levels",
-    "time_stop": "exit date if thesis fails",
-    "iv_warning": "IV environment and whether good time to buy",
-    "risk_reward_score": 7,
-    "max_loss_pct": 40,
-    "confidence": 75
-  }}
-],
-"act_by_hours": 48,
-"catalyst_date": "{today}",
-"iv_environment": "normal",
-"risk_level": "medium",
-"ripple_tickers": [],
-"summary_one_line": "complete one-line thesis",
-"news_used": {json.dumps([a['title'][:80] for a in articles[:4]])}
+{{
+  "score": 82,
+  "event_category": "earnings",
+  "primary_ticker": "{ticker}",
+  "sector": "Technology",
+  "current_price": {price_val},
+  "buy_hold_sell": {{
+    "recommendation": "BUY",
+    "analyst_facts": "cite actual analyst upgrades, price targets, news facts from the news provided above",
+    "claude_opinion": "your own separate assessment of the situation"
+  }},
+  "reasoning_chain": [
+    {{"step": "Event", "text": "full description of main catalyst"}},
+    {{"step": "1st Order", "text": "immediate market impact"}},
+    {{"step": "2nd Order", "text": "downstream effects"}},
+    {{"step": "Edge", "text": "why market has not fully priced this in"}}
+  ],
+  "portfolio_impact": {{
+    "held_positions": [
+      {{
+        "ticker": "{ticker}",
+        "action": "ADD",
+        "analyst_facts": "news-based reason to add",
+        "claude_rationale": "claude view on position",
+        "current_equity": 0
+      }}
+    ],
+    "correlation_alerts": [],
+    "hedge_suggestion": null
+  }},
+  "options_plays": [
+    {{
+      "ticker": "{ticker}",
+      "type": "call",
+      "role": "primary",
+      "current_price": {price_val},
+      "strike_note": "calculate OTM strike from current price",
+      "expiry_note": "Month DD YYYY with reason for this expiry",
+      "days_out": 45,
+      "reasoning": "complete reasoning for this play",
+      "entry_strategy": "complete entry instructions",
+      "profit_target": "exact price level to take profit",
+      "stop_loss": "exact price level to cut loss",
+      "time_stop": "exit by this date if thesis fails",
+      "iv_warning": "current IV assessment and timing advice",
+      "risk_reward_score": 7,
+      "max_loss_pct": 40,
+      "confidence": 75
+    }}
+  ],
+  "act_by_hours": 48,
+  "catalyst_date": "{today}",
+  "iv_environment": "normal",
+  "risk_level": "medium",
+  "ripple_tickers": [],
+  "summary_one_line": "complete one-line investment thesis",
+  "news_used": {json.dumps([a['title'][:80] for a in articles[:4]])}
 }}"""
 
-    import time
     response = None
     for attempt in range(3):
         try:
@@ -232,14 +198,12 @@ IMPORTANT: Raw JSON only. No markdown. Start with open brace.
             return result
 
         except json.JSONDecodeError:
-            # Try to salvage truncated JSON
             try:
                 raw    = response.content[0].text if response else ""
                 result = _salvage_json(raw)
                 if result and result.get("primary_ticker"):
                     result["is_manual_lookup"] = True
                     result["lookup_ticker"]    = ticker
-                    result["lookup_company"]   = company
                     return result
             except Exception:
                 pass
@@ -251,7 +215,6 @@ IMPORTANT: Raw JSON only. No markdown. Start with open brace.
             if attempt < 2:
                 time.sleep(1)
                 continue
-            # Last resort salvage
             try:
                 if response:
                     result = _salvage_json(response.content[0].text)
@@ -261,6 +224,18 @@ IMPORTANT: Raw JSON only. No markdown. Start with open brace.
                         return result
             except Exception:
                 pass
-            return {"error": f"Analysis failed: {str(e)[:100]}", "score": 0, "is_manual_lookup": True}
+            return {"error": f"Analysis failed: {str(e)[:200]}", "score": 0, "is_manual_lookup": True}
 
     return {"error": "Max retries exceeded", "score": 0, "is_manual_lookup": True}
+
+
+@router.post("/ask-play")
+async def ask_about_play(body: dict):
+    from core.analyser import ask_about_play as _ask
+    play           = body.get("play", {})
+    question       = body.get("question", "")
+    signal_context = body.get("signal_context", {})
+    if not question or not play:
+        return {"error": "play and question are required"}
+    answer = _ask(play, question, signal_context)
+    return {"answer": answer}
