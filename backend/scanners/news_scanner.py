@@ -20,6 +20,7 @@ RSS_FEEDS = [
     ("https://news.google.com/rss/search?q=druckenmiller+soros+burry+einhorn+portfolio&hl=en-US&gl=US&ceid=US:en", "google_news"),
     ("https://news.google.com/rss/search?q=hedge+fund+13F+filing+new+position+exit&hl=en-US&gl=US&ceid=US:en", "google_news"),
     ("https://news.google.com/rss/search?q=citadel+point72+tiger+global+coatue+portfolio&hl=en-US&gl=US&ceid=US:en", "google_news"),
+    ("https://news.google.com/rss/search?q=elliott+management+icahn+third+point+activist&hl=en-US&gl=US&ceid=US:en", "google_news"),
 
     # Your core sectors
     ("https://news.google.com/rss/search?q=nvidia+AMD+semiconductor+chip+AI+GPU&hl=en-US&gl=US&ceid=US:en", "google_news"),
@@ -27,6 +28,7 @@ RSS_FEEDS = [
     ("https://news.google.com/rss/search?q=rocket+lab+space+satellite+launch+contract&hl=en-US&gl=US&ceid=US:en", "google_news"),
     ("https://news.google.com/rss/search?q=optoelectronics+photonics+optical+interconnect+POET&hl=en-US&gl=US&ceid=US:en", "google_news"),
     ("https://news.google.com/rss/search?q=memory+chip+DRAM+NAND+micron+western+digital&hl=en-US&gl=US&ceid=US:en", "google_news"),
+    ("https://news.google.com/rss/search?q=rare+earth+critical+minerals+mp+materials&hl=en-US&gl=US&ceid=US:en", "google_news"),
     ("https://news.google.com/rss/search?q=layoffs+acquisition+merger+partnership+earnings+beat&hl=en-US&gl=US&ceid=US:en", "google_news"),
 
     # Your specific holdings
@@ -42,6 +44,7 @@ NEWS_API_QUERIES = [
     "nvidia semiconductor AI chip partnership acquisition",
     "quantum computing ionq breakthrough",
     "layoffs restructuring earnings beat miss",
+    "13F filing institutional investor new stake",
 ]
 
 def _url_hash(url: str) -> str:

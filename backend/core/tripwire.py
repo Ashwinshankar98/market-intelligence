@@ -128,6 +128,27 @@ TICKER_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+# Company name pattern — articles use names not tickers; both count as "watchlist hit"
+COMPANY_NAMES_PATTERN = re.compile(
+    r'\b('
+    # Your holdings by full name
+    r'nvidia|meta(?:\s+platforms?)?|facebook|alphabet|google|nebius|sandisk|'
+    r'western\s+digital|netflix|micron|palantir|microsoft|corning|broadcom|'
+    r'amkor|kulicke|tempus|tesla|sofi|robinhood|rocket\s+lab|'
+    r'super\s*micro|supermicro|applied\s+digital|'
+    # Key sector peers by name
+    r'samsung|sk\s+hynix|intel|qualcomm|arm\s+holdings|marvell|'
+    r'taiwan\s+semiconductor|tsmc|applied\s+materials|lam\s+research|'
+    r'kla\s+corp|asml|advanced\s+micro\s+devices|'
+    r'crowdstrike|palo\s+alto|cloudflare|zscaler|snowflake|'
+    r'lockheed|raytheon|northrop|boeing|'
+    r'd-wave|rigetti|'
+    # Activist / hedge fund names already in FAMOUS_INVESTORS_PATTERN but add firms
+    r'elliott\s+management|third\s+point|greenlight\s+capital'
+    r')\b',
+    re.IGNORECASE
+)
+
 # Famous investor pattern
 FAMOUS_INVESTORS_PATTERN = re.compile(
     r'\b(ackman|cathie wood|ark invest|buffett|berkshire|dalio|bridgewater|'
@@ -151,7 +172,7 @@ def run_tripwire(text: str) -> dict:
 
     tickers   = list(set(TICKER_PATTERN.findall(text)))
     investors = list(set(FAMOUS_INVESTORS_PATTERN.findall(text_lower)))
-    has_watchlist_ticker = len(tickers) > 0
+    has_watchlist_ticker = len(tickers) > 0 or bool(COMPANY_NAMES_PATTERN.search(text))
 
     for pattern, cat, boost, requires_ticker in TRIPWIRES:
         matches = re.findall(pattern, text_lower, re.IGNORECASE)

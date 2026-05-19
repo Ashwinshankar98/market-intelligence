@@ -70,13 +70,38 @@ async def lookup_ticker(body: dict):
         }
 
 
-async def _do_lookup(body: dict):
-    ticker  = body.get("ticker", "").upper().strip()
-    company = body.get("company", ticker)
-    context = body.get("context", "")
+def _resolve_to_ticker(user_input: str) -> str:
+    """Resolve a company name to its ticker using yfinance Search."""
+    import re as _re
+    cleaned = user_input.strip().upper()
+    # Already looks like a ticker (1–5 letters, no spaces)
+    if _re.match(r'^[A-Z]{1,5}$', cleaned):
+        return cleaned
+    try:
+        import yfinance as yf
+        results = yf.Search(user_input, max_results=5).quotes
+        for r in results:
+            sym = r.get("symbol", "")
+            # Prefer US-listed equities/ETFs (no dots = not foreign listed)
+            if r.get("quoteType") in ("EQUITY", "ETF") and "." not in sym:
+                return sym
+        if results:
+            return results[0].get("symbol", cleaned)
+    except Exception:
+        pass
+    return cleaned
 
-    if not ticker:
+
+async def _do_lookup(body: dict):
+    raw_input = body.get("ticker", "").strip()
+    if not raw_input:
         return {"error": "ticker is required"}
+
+    # Resolve company name → ticker in a thread (yfinance Search is sync)
+    loop    = asyncio.get_event_loop()
+    ticker  = await loop.run_in_executor(None, _resolve_to_ticker, raw_input)
+    company = body.get("company", raw_input)  # keep original name for display
+    context = body.get("context", "")
 
     import datetime
     today = datetime.date.today().isoformat()
