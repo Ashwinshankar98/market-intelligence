@@ -98,10 +98,23 @@ async def _do_lookup(body: dict):
 
     pos_note = ""
     held_equity = 0
-    if ticker in HOLDINGS:
+    is_held = ticker in HOLDINGS
+    if is_held:
         h = HOLDINGS[ticker]
         pos_note    = f"YOU HOLD: {h['shares']} shares @ avg ${h['avg_cost']} (equity ${h['equity']:,})"
         held_equity = h['equity']
+
+    # Only include a held_positions template entry when the user actually holds the ticker
+    if is_held:
+        held_positions_template = f"""[{{
+      "ticker":"{ticker}",
+      "action":"ADD",
+      "analyst_facts":"news-based reason to act on your existing position",
+      "claude_rationale":"your view on the position",
+      "current_equity":{held_equity}
+    }}]"""
+    else:
+        held_positions_template = "[]"
 
     prompt = f"""Analyse {ticker} for investment. Return ONLY raw JSON starting with {{
 
@@ -130,13 +143,7 @@ Return this exact JSON structure:
     {{"step":"Edge","text":"why this opportunity exists now"}}
   ],
   "portfolio_impact":{{
-    "held_positions":[{{
-      "ticker":"{ticker}",
-      "action":"ADD",
-      "analyst_facts":"news-based reason to act",
-      "claude_rationale":"your view on the position",
-      "current_equity":{held_equity}
-    }}],
+    "held_positions":{held_positions_template},
     "correlation_alerts":[],
     "hedge_suggestion":null
   }},
@@ -209,13 +216,3 @@ Return this exact JSON structure:
     }
 
 
-@router.post("/ask-play")
-async def ask_about_play(body: dict):
-    from core.analyser import ask_about_play as _ask
-    play           = body.get("play", {})
-    question       = body.get("question", "")
-    signal_context = body.get("signal_context", {})
-    if not question or not play:
-        return {"error": "play and question are required"}
-    answer = _ask(play, question, signal_context)
-    return {"answer": answer}
