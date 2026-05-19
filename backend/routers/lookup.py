@@ -13,10 +13,22 @@ MODEL       = "claude-sonnet-4-6"
 NEWS_API_KEY= os.getenv("NEWS_API_KEY", "")
 
 def _get_price(ticker: str) -> float | None:
-    """Fetch latest price from yfinance with timeout protection."""
+    """Fetch latest price from yfinance."""
     try:
         import yfinance as yf
-        hist = yf.Ticker(ticker).history(period="5d")
+        t = yf.Ticker(ticker)
+        # Try fast_info first (most current)
+        try:
+            price = t.fast_info.last_price
+            if price and price > 0:
+                return round(float(price), 2)
+        except Exception:
+            pass
+        # Fall back to history
+        hist = t.history(period="1d", interval="1m")
+        if not hist.empty:
+            return round(float(hist["Close"].iloc[-1]), 2)
+        hist = t.history(period="5d")
         if not hist.empty:
             return round(float(hist["Close"].iloc[-1]), 2)
     except Exception:

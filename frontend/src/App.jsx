@@ -273,13 +273,13 @@ function SignalDetail({ signal, onBack, isMobile }) {
           </div>
           {buyHoldSell.analyst_facts && (
             <div style={{ background: "#0a0a12", borderRadius: 6, padding: "8px 10px", marginBottom: 8 }}>
-              <div style={{ fontSize: 9, color: "#60a5fa", letterSpacing: 2, marginBottom: 4 }}>📰 ANALYST FACTS & NEWS</div>
+              <div style={{ fontSize: 9, color: "#60a5fa", letterSpacing: 2, marginBottom: 4 }}>ANALYST FACTS & NEWS</div>
               <div style={{ fontSize: 11, color: "#e2e8f0", lineHeight: 1.7 }}>{buyHoldSell.analyst_facts}</div>
             </div>
           )}
           {buyHoldSell.claude_opinion && (
             <div style={{ background: "#0a0a12", borderRadius: 6, padding: "8px 10px" }}>
-              <div style={{ fontSize: 9, color: "#a78bfa", letterSpacing: 2, marginBottom: 4 }}>🤖 CLAUDE'S OPINION</div>
+              <div style={{ fontSize: 9, color: "#a78bfa", letterSpacing: 2, marginBottom: 4 }}>CLAUDE'S OPINION</div>
               <div style={{ fontSize: 11, color: "#e2e8f0", lineHeight: 1.7 }}>{buyHoldSell.claude_opinion}</div>
             </div>
           )}
@@ -304,8 +304,8 @@ function SignalDetail({ signal, onBack, isMobile }) {
                       color: pos.action === "ADD" ? "#4ade80" : pos.action === "REDUCE" ? "#f87171" : "#fbbf24"
                     }}>{pos.action}</span>
                   </div>
-                  {pos.analyst_facts && <div style={{ fontSize: 11, color: "#60a5fa", lineHeight: 1.6, marginBottom: 4 }}>📰 {pos.analyst_facts}</div>}
-                  {(pos.claude_rationale || pos.rationale) && <div style={{ fontSize: 11, color: "#aaa", lineHeight: 1.6 }}>🤖 {pos.claude_rationale || pos.rationale}</div>}
+                  {pos.analyst_facts && <div style={{ fontSize: 11, color: "#60a5fa", lineHeight: 1.6, marginBottom: 4 }}>ANALYST: {pos.analyst_facts}</div>}
+                  {(pos.claude_rationale || pos.rationale) && <div style={{ fontSize: 11, color: "#aaa", lineHeight: 1.6 }}>CLAUDE: {pos.claude_rationale || pos.rationale}</div>}
                   {pos.current_equity && <div style={{ fontSize: 10, color: "#555", marginTop: 4 }}>Current equity: ${pos.current_equity?.toLocaleString()}</div>}
                 </div>
               ))}
@@ -319,8 +319,12 @@ function SignalDetail({ signal, onBack, isMobile }) {
                 <div key={i} style={{ background: "#0a0a12", borderRadius: 6, padding: "8px 10px", marginBottom: 6 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
                     <span style={{ fontSize: 12, fontWeight: 700, color: "#f1f5f9" }}>{c.ticker}</span>
-                    <span style={{ fontSize: 10, color: c.impact === "bullish" ? "#4ade80" : "#f87171" }}>
-                      {c.impact === "bullish" ? "📈" : "📉"} {c.impact?.toUpperCase()}
+                    <span style={{
+                      fontSize: 10, padding: "1px 8px", borderRadius: 4, fontWeight: 700,
+                      background: c.impact === "bullish" ? "#052e16" : "#2d0a0a",
+                      color: c.impact === "bullish" ? "#4ade80" : "#f87171"
+                    }}>
+                      {c.impact === "bullish" ? "BULLISH" : "BEARISH"}
                     </span>
                   </div>
                   <div style={{ fontSize: 11, color: "#aaa", lineHeight: 1.6 }}>{c.note}</div>
@@ -328,7 +332,9 @@ function SignalDetail({ signal, onBack, isMobile }) {
               ))}
               {corrTickers.length > 0 && corrAlerts.length === 0 && (
                 <div style={{ background: "#0a0a12", borderRadius: 6, padding: "8px 10px" }}>
-                  <div style={{ fontSize: 11, color: "#aaa" }}>Your {corrTickers.join(", ")} positions are affected by this news</div>
+                  <div style={{ fontSize: 11, color: "#aaa" }}>
+                    Your {corrTickers.join(", ")} positions are affected by this news
+                  </div>
                 </div>
               )}
             </div>
@@ -419,8 +425,11 @@ function SearchBar({ onResult }) {
         body: JSON.stringify({ ticker: ticker.toUpperCase().trim(), company: ticker.trim(), context: context.trim() }),
       });
       const data = await resp.json();
-      if (data.error) setError(data.error);
-      else onResult(data);
+      if (data.error && !data.primary_ticker) {
+        setError(data.error);
+      } else {
+        onResult(data);
+      }
     } catch (e) {
       setError("Failed to connect");
     } finally {
@@ -515,7 +524,16 @@ export default function App() {
   usePoll(fetchAll, 30000);
 
   const handleLookupResult = (result) => {
-    const enriched = { ...result, id: `lookup-${Date.now()}`, created_at: new Date().toISOString(), headline: result.summary_one_line || `${result.primary_ticker} analysis` };
+    const ticker = result.primary_ticker || result.lookup_ticker || "Unknown";
+    const headline = result.summary_one_line || result.headline || `${ticker} analysis`;
+    const enriched = {
+      ...result,
+      id: `lookup-${Date.now()}`,
+      created_at: new Date().toISOString(),
+      headline,
+      primary_ticker: ticker,
+      score: result.score || 0,
+    };
     setLookupResults(prev => [enriched, ...prev]);
     setSelected(enriched);
   };
