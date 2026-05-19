@@ -15,44 +15,21 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
 def _get_price_safe(ticker: str) -> float | None:
     """
-    Fetch price with multiple fallbacks:
-    1. yfinance history (3s hard timeout via SIGALRM)
-    2. Yahoo Finance JSON API (direct HTTP, always works)
-    3. Return None if both fail
+    Fetch latest price directly from Yahoo Finance HTTP API.
+    No yfinance library — fast, reliable, works 24/7.
     """
-    import signal as _signal
-
-    # ── Method 1: yfinance with hard timeout ──────────────────────
-    def _handler(signum, frame):
-        raise TimeoutError()
-
-    try:
-        _signal.signal(_signal.SIGALRM, _handler)
-        _signal.alarm(3)
-        try:
-            import yfinance as yf
-            hist = yf.Ticker(ticker).history(period="5d")
-            if not hist.empty:
-                return round(float(hist["Close"].iloc[-1]), 2)
-        finally:
-            _signal.alarm(0)
-    except Exception:
-        pass
-
-    # ── Method 2: Yahoo Finance direct HTTP (fast fallback) ───────
     try:
         import urllib.request
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=5d"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=5) as resp:
-            data  = json.loads(resp.read())
+            data   = json.loads(resp.read())
             closes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
             closes = [c for c in closes if c is not None]
             if closes:
                 return round(float(closes[-1]), 2)
     except Exception:
         pass
-
     return None
 
 
