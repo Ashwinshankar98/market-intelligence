@@ -146,25 +146,24 @@ async def scan_rss_feeds() -> list:
             feed = feedparser.parse(feed_url)
             for entry in feed.entries[:20]:
                 url      = entry.get("link", "")
+                headline = entry.get("title", "")
+                summary  = entry.get("summary", "") or entry.get("description", "")
                 pub_date = entry.get("published", "")
 
                 if not url or _already_processed(url):
                     continue
 
-                # ── Age filter — skip old articles ────────────────────────────
+                # ── Age filter ────────────────────────────────────────────────
                 if not _is_recent(pub_date):
                     skipped_old += 1
                     _mark_processed(url)
                     continue
 
-                # ── Headline stale check — catches undated old quarterly articles
+                # ── Headline stale check (undated old quarterly articles) ──────
                 if _headline_is_stale(headline):
                     skipped_old += 1
                     _mark_processed(url)
                     continue
-
-                headline  = entry.get("title", "")
-                summary   = entry.get("summary", "") or entry.get("description", "")
                 full_text = f"{headline} {summary}"
                 result    = run_tripwire(full_text)
                 _mark_processed(url)
