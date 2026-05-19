@@ -9,15 +9,18 @@ from core.tripwire import run_tripwire
 MAX_ARTICLE_AGE_HOURS = int(os.getenv("MAX_ARTICLE_AGE_HOURS", 48))
 
 RSS_FEEDS = [
-    # General business/tech news
-    ("https://feeds.reuters.com/reuters/businessNews",   "reuters_rss"),
-    ("https://feeds.reuters.com/reuters/technologyNews", "reuters_rss"),
+    # General business/tech news (Reuters deprecated — replaced with CNBC + Google News)
+    ("https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839135", "cnbc_rss"),
+    ("https://www.cnbc.com/id/19854910/device/rss/rss.html", "cnbc_rss"),
+    ("https://news.google.com/rss/search?q=stock+market+earnings+merger+acquisition+deal&hl=en-US&gl=US&ceid=US:en", "google_news"),
+    ("https://news.google.com/rss/search?q=technology+stocks+AI+semiconductor+chip+deal&hl=en-US&gl=US&ceid=US:en", "google_news"),
 
-    # Hedge fund / investor moves
+    # Hedge fund / investor moves (split large queries to avoid rate-limiting)
     ("https://news.google.com/rss/search?q=ackman+pershing+square+portfolio+bought+sold&hl=en-US&gl=US&ceid=US:en", "google_news"),
     ("https://news.google.com/rss/search?q=cathie+wood+ark+invest+bought+sold+position&hl=en-US&gl=US&ceid=US:en", "google_news"),
     ("https://news.google.com/rss/search?q=warren+buffett+berkshire+hathaway+bought+sold&hl=en-US&gl=US&ceid=US:en", "google_news"),
-    ("https://news.google.com/rss/search?q=druckenmiller+soros+burry+einhorn+portfolio&hl=en-US&gl=US&ceid=US:en", "google_news"),
+    ("https://news.google.com/rss/search?q=druckenmiller+duquesne+portfolio+position&hl=en-US&gl=US&ceid=US:en", "google_news"),
+    ("https://news.google.com/rss/search?q=soros+burry+einhorn+loeb+portfolio+stake&hl=en-US&gl=US&ceid=US:en", "google_news"),
     ("https://news.google.com/rss/search?q=hedge+fund+13F+filing+new+position+exit&hl=en-US&gl=US&ceid=US:en", "google_news"),
     ("https://news.google.com/rss/search?q=citadel+point72+tiger+global+coatue+portfolio&hl=en-US&gl=US&ceid=US:en", "google_news"),
     ("https://news.google.com/rss/search?q=elliott+management+icahn+third+point+activist&hl=en-US&gl=US&ceid=US:en", "google_news"),
@@ -34,6 +37,7 @@ RSS_FEEDS = [
     # Your specific holdings
     ("https://feeds.finance.yahoo.com/rss/2.0/headline?s=NVDA,META,GOOGL,NBIS,SNDK,MU,WDC,IONQ,RKLB,POET&region=US&lang=en-US", "yahoo_finance"),
     ("https://feeds.finance.yahoo.com/rss/2.0/headline?s=AMD,AVGO,SMCI,CRWV,IREN,APLD,QBTS,QUBT,PLTR,MSFT&region=US&lang=en-US", "yahoo_finance"),
+    ("https://feeds.finance.yahoo.com/rss/2.0/headline?s=TSLA,SOFI,HOOD,GLW,AMKR,KLIC,TEM,DRAM,MRAM,NFLX&region=US&lang=en-US", "yahoo_finance"),
 ]
 
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")

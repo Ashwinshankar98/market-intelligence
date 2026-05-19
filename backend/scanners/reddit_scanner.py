@@ -64,7 +64,7 @@ async def _scan_with_json_api() -> list:
                     for ticker in result["tickers"]:
                         ticker_counts[ticker] += 1
 
-                    if result["passed"] and score > 200:
+                    if result["passed"] and score >= 100:
                         conn = get_connection()
                         conn.execute("""
                             INSERT OR IGNORE INTO events
