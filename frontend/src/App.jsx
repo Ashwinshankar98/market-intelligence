@@ -412,12 +412,19 @@ function SearchBar({ onResult }) {
   const [step, setStep] = useState(0);
   const [error, setError] = useState("");
 
-  const STEPS = ["Fetching latest news...", "Getting current prices...", "Sending to Claude...", "Building options plays...", "Almost done..."];
+  const STEPS = [
+    "Fetching latest news...",
+    "Getting current price...",
+    "Sending to Claude...",
+    "Building analysis...",
+    "Almost done...",
+  ];
 
   const handleSearch = async () => {
     if (!ticker.trim()) return;
     setLoading(true); setError(""); setStep(0);
-    const iv = setInterval(() => setStep(p => p < STEPS.length - 1 ? p + 1 : p), 5000);
+    // Step every 8 seconds — realistic for 15-25s total response
+    const iv = setInterval(() => setStep(p => p < STEPS.length - 1 ? p + 1 : p), 8000);
     try {
       const resp = await fetch(`${API}/api/lookup`, {
         method: "POST",
