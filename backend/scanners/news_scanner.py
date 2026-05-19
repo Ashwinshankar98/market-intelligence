@@ -142,18 +142,32 @@ def _save_event(source, event_type, headline, summary, url, tripwire_result, pub
     return event_id
 
 async def scan_rss_feeds() -> list:
-    passing  = []
-    skipped_old = 0
+    passing      = []
+    skipped_old  = 0
+    total_seen   = 0   # fetched from feeds
+    already_done = 0   # already in processed_urls
+
     for feed_url, source in RSS_FEEDS:
         try:
-            feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:20]:
+            feed       = feedparser.parse(feed_url)
+            n_entries  = len(feed.entries)
+            if n_entries == 0:
+                print(f"[RSS] Empty/unreachable: {feed_url[8:60]}")
+                continue
+
+            for entry in feed.entries[:30]:          # raised from 20 → 30
                 url      = entry.get("link", "")
                 headline = entry.get("title", "")
                 summary  = entry.get("summary", "") or entry.get("description", "")
                 pub_date = entry.get("published", "")
 
-                if not url or _already_processed(url):
+                if not url:
+                    continue
+
+                total_seen += 1
+
+                if _already_processed(url):
+                    already_done += 1
                     continue
 
                 # ── Age filter ────────────────────────────────────────────────
@@ -167,6 +181,7 @@ async def scan_rss_feeds() -> list:
                     skipped_old += 1
                     _mark_processed(url)
                     continue
+
                 full_text = f"{headline} {summary}"
                 result    = run_tripwire(full_text)
                 _mark_processed(url)
@@ -186,16 +201,19 @@ async def scan_rss_feeds() -> list:
                         "score_boost": result["score_boost"] + extra,
                     })
         except Exception as e:
-            print(f"[RSS] Error scanning {feed_url[:60]}: {e}")
+            print(f"[RSS] Error scanning {feed_url[8:60]}: {e}")
 
-    print(f"[News] RSS scan: {len(passing)} passed, {skipped_old} skipped (too old)")
+    print(f"[News] RSS: {len(passing)} passed | {skipped_old} too old | {already_done} already seen | {total_seen} total fetched")
     return passing
 
 async def scan_newsapi() -> list:
     if not NEWS_API_KEY:
+        print("[NewsAPI] No API key — skipping")
         return []
-    passing     = []
-    skipped_old = 0
+    passing      = []
+    skipped_old  = 0
+    already_done = 0
+    total_seen   = 0
     async with httpx.AsyncClient(timeout=10) as client:
         for query in NEWS_API_QUERIES:
             try:
@@ -211,7 +229,13 @@ async def scan_newsapi() -> list:
                     url      = article.get("url", "")
                     pub_date = article.get("publishedAt", "")
 
-                    if not url or _already_processed(url):
+                    if not url:
+                        continue
+
+                    total_seen += 1
+
+                    if _already_processed(url):
+                        already_done += 1
                         continue
 
                     if not _is_recent(pub_date):
@@ -239,7 +263,7 @@ async def scan_newsapi() -> list:
                             "score_boost": result["score_boost"] + extra,
                         })
             except Exception as e:
-                print(f"[NewsAPI] Error: {e}")
+                print(f"[NewsAPI] Error on '{query[:40]}': {e}")
 
-    print(f"[NewsAPI] Scan: {len(passing)} passed, {skipped_old} skipped (too old)")
+    print(f"[NewsAPI]: {len(passing)} passed | {skipped_old} too old | {already_done} already seen | {total_seen} total fetched")
     return passing
