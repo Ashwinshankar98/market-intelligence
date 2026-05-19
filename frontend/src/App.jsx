@@ -306,7 +306,7 @@ function SignalDetail({ signal, onBack, isMobile }) {
                   </div>
                   {pos.analyst_facts && <div style={{ fontSize: 11, color: "#60a5fa", lineHeight: 1.6, marginBottom: 4 }}>ANALYST: {pos.analyst_facts}</div>}
                   {(pos.claude_rationale || pos.rationale) && <div style={{ fontSize: 11, color: "#aaa", lineHeight: 1.6 }}>CLAUDE: {pos.claude_rationale || pos.rationale}</div>}
-                  {pos.current_equity && <div style={{ fontSize: 10, color: "#555", marginTop: 4 }}>Current equity: ${pos.current_equity?.toLocaleString()}</div>}
+                  {pos.current_equity > 0 && <div style={{ fontSize: 10, color: "#555", marginTop: 4 }}>Current equity: ${pos.current_equity?.toLocaleString()}</div>}
                 </div>
               ))}
             </div>
