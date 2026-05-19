@@ -202,16 +202,24 @@ async def run_full_scan():
 
     print(f"[Orchestrator] {len(tier2_passing)} events passed Tier 2")
 
-    # ── Tier 3 — deep analysis (Fix 3: only score >= 72 proceeds) ────────────
+    # ── Tier 3 — deep analysis, run in PARALLEL ───────────────────────────────
+    eligible = [e for e in tier2_passing if e.get("quick_score", 0) >= DEEP_THRESHOLD]
+    skipped  = len(tier2_passing) - len(eligible)
+    if skipped:
+        print(f"[Tier3] {skipped} events below deep threshold ({DEEP_THRESHOLD}) — skipped")
+
+    print(f"[Tier3] Running {len(eligible)} deep analyses in parallel...")
+
+    # Run all Tier 3 calls concurrently — cuts time from N×15s to ~15s total
+    tier3_tasks  = [_run_tier3(event) for event in eligible]
+    tier3_results = await asyncio.gather(*tier3_tasks, return_exceptions=True)
+
     new_signals = []
-    for event in tier2_passing:
-        # Fix 3: raised threshold
-        if event.get("quick_score", 0) < DEEP_THRESHOLD:
-            print(f"[Tier3] below deep threshold ({DEEP_THRESHOLD}) — skipping {event['headline'][:50]}")
-            continue
-        signal = await _run_tier3(event)
-        if signal:
-            new_signals.append(signal)
+    for result in tier3_results:
+        if isinstance(result, Exception):
+            print(f"[Tier3] Error: {result}")
+        elif result:
+            new_signals.append(result)
 
     print(f"[Orchestrator] Scan complete. {len(new_signals)} signals generated.")
     return new_signals

@@ -69,13 +69,59 @@ def _is_recent(pub_date_str: str, max_hours: int = MAX_ARTICLE_AGE_HOURS) -> boo
         return age.total_seconds() < (max_hours * 3600)
     except Exception:
         try:
-            # Try ISO format (NewsAPI)
             parsed = datetime.fromisoformat(pub_date_str.replace("Z", "+00:00"))
             from datetime import timezone
             age = datetime.now(timezone.utc) - parsed
             return age.total_seconds() < (max_hours * 3600)
         except Exception:
             return True  # can't parse = assume recent
+
+def _headline_is_stale(headline: str) -> bool:
+    """
+    Detect old articles by looking for past quarter/year patterns in headline.
+    Catches undated RSS articles that slip through the date filter.
+    e.g. 'Q4 2025', 'Q3 2025', 'Q1 2025', 'First Quarter 2025'
+    """
+    import re
+    from datetime import date
+    current_year = date.today().year
+    current_q    = (date.today().month - 1) // 3 + 1
+
+    # Flag any quarter from a past year
+    past_year_pattern = re.compile(
+        r'\bQ[1-4]\s*20(?:2[0-4])\b|\b20(?:2[0-4])\s*Q[1-4]\b',
+        re.IGNORECASE
+    )
+    if past_year_pattern.search(headline):
+        return True
+
+    # Flag current year but past quarters
+    # e.g. if we're in Q2 2026, flag "Q1 2026" articles
+    current_year_old_q = re.compile(
+        r'\bQ([1-4])\s*' + str(current_year) + r'\b|\b' + str(current_year) + r'\s*Q([1-4])\b',
+        re.IGNORECASE
+    )
+    for match in current_year_old_q.finditer(headline):
+        q_num = int(match.group(1) or match.group(2))
+        if q_num < current_q:
+            return True
+
+    # Flag "First/Second/Third/Fourth Quarter YEAR" patterns
+    quarter_words = {
+        "first": 1, "second": 2, "third": 3, "fourth": 4
+    }
+    word_q_pattern = re.compile(
+        r'\b(first|second|third|fourth)\s+quarter\s+(\d{4})\b',
+        re.IGNORECASE
+    )
+    for match in word_q_pattern.finditer(headline):
+        q_word = match.group(1).lower()
+        year   = int(match.group(2))
+        q_num  = quarter_words.get(q_word, 0)
+        if year < current_year or (year == current_year and q_num < current_q):
+            return True
+
+    return False
 
 def _save_event(source, event_type, headline, summary, url, tripwire_result, published_at=None):
     conn = get_connection()
@@ -108,7 +154,13 @@ async def scan_rss_feeds() -> list:
                 # ── Age filter — skip old articles ────────────────────────────
                 if not _is_recent(pub_date):
                     skipped_old += 1
-                    _mark_processed(url)  # mark so we don't re-check
+                    _mark_processed(url)
+                    continue
+
+                # ── Headline stale check — catches undated old quarterly articles
+                if _headline_is_stale(headline):
+                    skipped_old += 1
+                    _mark_processed(url)
                     continue
 
                 headline  = entry.get("title", "")
