@@ -12,39 +12,59 @@ client       = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 MODEL        = "claude-sonnet-4-6"
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
-def _get_price(ticker: str) -> float | None:
-    """Fast price fetch — tries multiple methods with short timeout."""
+
+def _get_price_safe(ticker: str) -> float | None:
+    """
+    Fetch price with multiple fallbacks:
+    1. yfinance history (3s hard timeout via SIGALRM)
+    2. Yahoo Finance JSON API (direct HTTP, always works)
+    3. Return None if both fail
+    """
+    import signal as _signal
+
+    # ── Method 1: yfinance with hard timeout ──────────────────────
+    def _handler(signum, frame):
+        raise TimeoutError()
+
     try:
-        import yfinance as yf
-        t = yf.Ticker(ticker)
-        # fast_info is the quickest method
-        p = t.fast_info.last_price
-        if p and p > 0:
-            return round(float(p), 2)
+        _signal.signal(_signal.SIGALRM, _handler)
+        _signal.alarm(3)
+        try:
+            import yfinance as yf
+            hist = yf.Ticker(ticker).history(period="5d")
+            if not hist.empty:
+                return round(float(hist["Close"].iloc[-1]), 2)
+        finally:
+            _signal.alarm(0)
     except Exception:
         pass
+
+    # ── Method 2: Yahoo Finance direct HTTP (fast fallback) ───────
     try:
-        import yfinance as yf
-        hist = yf.Ticker(ticker).history(period="1d", interval="5m")
-        if not hist.empty:
-            return round(float(hist["Close"].iloc[-1]), 2)
+        import urllib.request
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=5d"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data  = json.loads(resp.read())
+            closes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+            closes = [c for c in closes if c is not None]
+            if closes:
+                return round(float(closes[-1]), 2)
     except Exception:
         pass
+
     return None
 
+
 async def _fetch_top_news(ticker: str, max_articles: int = 5) -> list:
-    """Fetch only from ONE source fast — Google News RSS only."""
+    """Single RSS fetch — fast, no NewsAPI dependency."""
     try:
         url  = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
         feed = feedparser.parse(url)
-        articles = []
-        for e in feed.entries[:max_articles]:
-            articles.append({
-                "title":   e.get("title", "")[:100],
-                "summary": (e.get("summary", "") or "")[:150],
-                "date":    e.get("published", "")[:10],
-            })
-        return articles
+        return [
+            {"title": e.get("title", "")[:100], "date": e.get("published", "")[:10]}
+            for e in feed.entries[:max_articles]
+        ]
     except Exception:
         return []
 
@@ -54,8 +74,13 @@ async def lookup_ticker(body: dict):
     try:
         return await asyncio.wait_for(_do_lookup(body), timeout=50.0)
     except asyncio.TimeoutError:
-        return {"error": "Analysis timed out — try again", "score": 0,
-                "is_manual_lookup": True, "primary_ticker": body.get("ticker","").upper()}
+        return {
+            "error": "Analysis timed out — try again",
+            "score": 0,
+            "is_manual_lookup": True,
+            "primary_ticker": body.get("ticker", "").upper(),
+            "headline": f"{body.get('ticker','').upper()} analysis timed out",
+        }
 
 
 async def _do_lookup(body: dict):
@@ -69,91 +94,65 @@ async def _do_lookup(body: dict):
     import datetime
     today = datetime.date.today().isoformat()
 
-    # Fetch news and price in parallel
-    articles, current_price = await asyncio.gather(
-        _fetch_top_news(ticker),
-        asyncio.get_event_loop().run_in_executor(None, _get_price, ticker),
-        return_exceptions=True
-    )
+    # Fetch news and price in parallel — price has 3s hard timeout
+    news_task  = asyncio.create_task(_fetch_top_news(ticker))
+    price_task = asyncio.get_event_loop().run_in_executor(None, _get_price_safe, ticker)
 
-    if isinstance(articles, Exception):
-        articles = []
-    if isinstance(current_price, Exception):
+    # Wait max 8s for both — don't let price hang the whole request
+    try:
+        articles, current_price = await asyncio.wait_for(
+            asyncio.gather(news_task, price_task, return_exceptions=True),
+            timeout=8.0
+        )
+    except asyncio.TimeoutError:
+        articles      = []
         current_price = None
 
-    price_val  = current_price if current_price else 0
-    price_str  = f"${current_price}" if current_price else "unknown (market closed)"
+    if isinstance(articles, Exception):      articles      = []
+    if isinstance(current_price, Exception): current_price = None
 
-    # Build compact news string
-    news_lines = [f"[{a['date']}] {a['title']}" for a in (articles or [])[:5]]
-    news_str   = "\n".join(news_lines) if news_lines else "No recent news available."
+    price_val = current_price if current_price else 0
+    price_str = f"${current_price}" if current_price else "not available (market closed)"
 
-    # Position context
+    news_lines = [f"[{a.get('date','')}] {a.get('title','')}" for a in (articles or [])[:5]]
+    news_str   = "\n".join(news_lines) if news_lines else "No recent news found."
+
     pos_note = ""
+    held_equity = 0
     if ticker in HOLDINGS:
         h = HOLDINGS[ticker]
-        pos_note = f"YOU HOLD: {h['shares']} shares @ avg ${h['avg_cost']} (equity ${h['equity']:,})"
+        pos_note    = f"YOU HOLD: {h['shares']} shares @ avg ${h['avg_cost']} (equity ${h['equity']:,})"
+        held_equity = h['equity']
 
-    # Compact prompt — no large example JSON
-    prompt = f"""Analyse {ticker} ({company}) for investment. Return ONLY raw JSON starting with {{
+    prompt = f"""Analyse {ticker} for investment. Return ONLY raw JSON starting with {{
 
-Date: {today} | Price: {price_str}
-{f"Context: {context}" if context else ""}
+Date:{today} Price:{price_str}{f" Context:{context}" if context else ""}
 {pos_note}
 
-Recent news:
+News headlines:
 {news_str}
 
-JSON schema (fill all fields):
+Return this exact JSON structure:
 {{
-  "score": 0-100,
-  "event_category": "category",
-  "primary_ticker": "{ticker}",
-  "sector": "sector name",
-  "current_price": {price_val},
-  "buy_hold_sell": {{
-    "recommendation": "BUY|HOLD|SELL",
-    "analyst_facts": "what news/analysts say - cite sources",
-    "claude_opinion": "your own view separate from analysts"
-  }},
-  "reasoning_chain": [
-    {{"step": "Situation", "text": "current state of {ticker}"}},
-    {{"step": "Catalyst", "text": "key upcoming catalyst"}},
-    {{"step": "Risk", "text": "main risk to thesis"}},
-    {{"step": "Edge", "text": "why opportunity exists now"}}
+  "score":82,"event_category":"earnings","primary_ticker":"{ticker}","sector":"Technology","current_price":{price_val},
+  "buy_hold_sell":{{"recommendation":"BUY","analyst_facts":"cite news sources above","claude_opinion":"your view"}},
+  "reasoning_chain":[
+    {{"step":"Situation","text":"current state"}},
+    {{"step":"Catalyst","text":"key upcoming event"}},
+    {{"step":"Risk","text":"main downside risk"}},
+    {{"step":"Edge","text":"why opportunity exists"}}
   ],
-  "portfolio_impact": {{
-    "held_positions": [{{"ticker": "{ticker}", "action": "ADD|HOLD|REDUCE", "analyst_facts": "news reason", "claude_rationale": "your view", "current_equity": {HOLDINGS.get(ticker, {}).get("equity", 0)}}}],
-    "correlation_alerts": [],
-    "hedge_suggestion": null
-  }},
-  "options_plays": [
-    {{
-      "ticker": "{ticker}",
-      "type": "call|put",
-      "role": "primary",
-      "current_price": {price_val},
-      "strike_note": "strike with % OTM",
-      "expiry_note": "Month DD YYYY - reason",
-      "days_out": 45,
-      "reasoning": "why this play",
-      "entry_strategy": "when/how to enter",
-      "profit_target": "exit target",
-      "stop_loss": "stop price",
-      "time_stop": "exit by date",
-      "iv_warning": "IV level assessment",
-      "risk_reward_score": 1-10,
-      "max_loss_pct": 100,
-      "confidence": 0-100
-    }}
-  ],
-  "act_by_hours": 48,
-  "catalyst_date": "YYYY-MM-DD",
-  "iv_environment": "low|normal|elevated|high",
-  "risk_level": "low|medium|high",
-  "ripple_tickers": [],
-  "summary_one_line": "thesis in one sentence",
-  "news_used": {json.dumps([a['title'][:60] for a in (articles or [])[:3]])}
+  "portfolio_impact":{{"held_positions":[{{"ticker":"{ticker}","action":"HOLD","analyst_facts":"reason","claude_rationale":"view","current_equity":{held_equity}}}],"correlation_alerts":[],"hedge_suggestion":null}},
+  "options_plays":[{{
+    "ticker":"{ticker}","type":"call","role":"primary","current_price":{price_val},
+    "strike_note":"strike % OTM","expiry_note":"Month DD YYYY","days_out":45,
+    "reasoning":"why","entry_strategy":"when to enter","profit_target":"target",
+    "stop_loss":"stop","time_stop":"exit date","iv_warning":"IV level",
+    "risk_reward_score":7,"max_loss_pct":40,"confidence":75
+  }}],
+  "act_by_hours":48,"catalyst_date":"{today}","iv_environment":"normal",
+  "risk_level":"medium","ripple_tickers":[],"summary_one_line":"thesis",
+  "news_used":{json.dumps([a.get('title','')[:60] for a in (articles or [])[:3]])}
 }}"""
 
     response = None
@@ -169,7 +168,6 @@ JSON schema (fill all fields):
             result = json.loads(text)
             result["is_manual_lookup"] = True
             result["lookup_ticker"]    = ticker
-            result["lookup_company"]   = company
             return result
 
         except json.JSONDecodeError:
@@ -199,11 +197,17 @@ JSON schema (fill all fields):
                         return result
             except Exception:
                 pass
-            return {"error": str(e)[:200], "score": 0, "is_manual_lookup": True,
-                    "primary_ticker": ticker}
+            return {
+                "error": str(e)[:200], "score": 0,
+                "is_manual_lookup": True, "primary_ticker": ticker,
+                "headline": f"{ticker} analysis failed"
+            }
 
-    return {"error": "Max retries", "score": 0, "is_manual_lookup": True,
-            "primary_ticker": ticker}
+    return {
+        "error": "Max retries", "score": 0,
+        "is_manual_lookup": True, "primary_ticker": ticker,
+        "headline": f"{ticker} analysis"
+    }
 
 
 @router.post("/ask-play")
