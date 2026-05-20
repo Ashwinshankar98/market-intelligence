@@ -122,10 +122,18 @@ TRIPWIRES = [
      "rare_earth", 18, False),
 ]
 
+# Tickers that are also common English words — require UPPERCASE in source text to avoid
+# false positives (e.g. "based on" matching ON Semiconductor, "net" matching Cloudflare)
+_UPPERCASE_REQUIRED = {"ON", "NET", "BY", "AT", "OR", "IN", "RR", "MP", "SK"}
+
 # Ticker pattern for detection
 TICKER_PATTERN = re.compile(
     r'\b(' + '|'.join(re.escape(t) for t in sorted(ALWAYS_WATCH, key=len, reverse=True)) + r')\b',
     re.IGNORECASE
+)
+# Strict uppercase-only pattern for common-word tickers
+_UPPERCASE_TICKER_PATTERN = re.compile(
+    r'\b(' + '|'.join(re.escape(t) for t in sorted(_UPPERCASE_REQUIRED, key=len, reverse=True)) + r')\b'
 )
 
 # Company name pattern — articles use names not tickers; both count as "watchlist hit"
@@ -170,7 +178,12 @@ def run_tripwire(text: str) -> dict:
     score_boost = 0
     passed      = False
 
-    tickers   = list(set(TICKER_PATTERN.findall(text)))
+    raw_tickers = TICKER_PATTERN.findall(text)
+    # For common-word tickers, only count them if they appear uppercase in the source
+    tickers = list(set(
+        t for t in raw_tickers
+        if t.upper() not in _UPPERCASE_REQUIRED or _UPPERCASE_TICKER_PATTERN.search(text)
+    ))
     investors = list(set(FAMOUS_INVESTORS_PATTERN.findall(text_lower)))
     has_watchlist_ticker = len(tickers) > 0 or bool(COMPANY_NAMES_PATTERN.search(text))
 

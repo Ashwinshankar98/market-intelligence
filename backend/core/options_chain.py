@@ -72,6 +72,8 @@ def _time_to_expiry(expiry: date) -> float:
 
 # ── Main fetch ─────────────────────────────────────────────────────────────────
 
+_INVALID_TICKERS = {"ON", "NET", "BY", "AT", "OR", "IN", "RR", "MP", "SK"}
+
 def get_options_chain(ticker: str, current_price: float) -> list[dict]:
     """
     Fetch real call + put candidates for ticker from Alpaca.
@@ -79,6 +81,10 @@ def get_options_chain(ticker: str, current_price: float) -> list[dict]:
     sorted by how close they are to ATM, with greeks and bid/ask.
     Returns [] if Alpaca keys not configured or ticker not optionable.
     """
+    # Skip common-word false-positive tickers that Alpaca will reject
+    if not ticker or len(ticker) < 2 or ticker.upper() in _INVALID_TICKERS:
+        return []
+
     api_key = os.getenv("ALPACA_API_KEY", "")
     secret  = os.getenv("ALPACA_SECRET_KEY", "")
     if not api_key or not secret:
