@@ -101,8 +101,8 @@ async def _run_tier3(event: dict) -> dict | None:
                     (event_id, score, event_category, primary_ticker, sector,
                      headline, headline_hash, reasoning_chain, options_plays,
                      act_by_hours, catalyst_date, iv_environment, risk_level,
-                     ripple_tickers)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ripple_tickers, options_source, price_source, current_price)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 event.get("event_id"), score,
                 analysis.get("event_category", ""),
@@ -116,6 +116,9 @@ async def _run_tier3(event: dict) -> dict | None:
                 analysis.get("iv_environment", "normal"),
                 analysis.get("risk_level", "medium"),
                 json.dumps(analysis.get("ripple_tickers", [])),
+                analysis.get("options_source", "unknown"),
+                analysis.get("price_source", "unknown"),
+                analysis.get("current_price"),
             ))
             conn.commit()
             signal_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]

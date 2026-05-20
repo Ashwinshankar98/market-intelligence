@@ -47,6 +47,9 @@ def init_db():
         ripple_tickers  TEXT,
         telegram_sent   INTEGER DEFAULT 0,
         is_manual_lookup INTEGER DEFAULT 0,
+        options_source  TEXT DEFAULT 'unknown',
+        price_source    TEXT DEFAULT 'unknown',
+        current_price   REAL,
         created_at      TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -116,6 +119,19 @@ def init_db():
 
     """)
     conn.commit()
+
+    # Migrations — ADD COLUMN is idempotent via try/except (SQLite has no IF NOT EXISTS for columns)
+    for migration in [
+        "ALTER TABLE signals ADD COLUMN options_source TEXT DEFAULT 'unknown'",
+        "ALTER TABLE signals ADD COLUMN price_source   TEXT DEFAULT 'unknown'",
+        "ALTER TABLE signals ADD COLUMN current_price  REAL",
+    ]:
+        try:
+            conn.execute(migration)
+            conn.commit()
+        except Exception:
+            pass  # column already exists
+
     conn.close()
     print(f"[DB] Intelligence DB initialised at {DB_PATH}")
 
