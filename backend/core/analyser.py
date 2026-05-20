@@ -236,7 +236,7 @@ Respond ONLY with raw JSON. No markdown. Start with open brace.
     for attempt in range(3):
         try:
             response = client.messages.create(
-                model=MODEL, max_tokens=3000,
+                model=MODEL, max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}]
             )
             text = _clean_json(response.content[0].text)
