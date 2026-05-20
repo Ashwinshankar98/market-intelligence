@@ -178,8 +178,8 @@ def deep_analysis(headline: str, summary: str, category: str,
         )
     else:
         options_instruction = (
-            "6. OPTIONS: No live chain available — estimate strikes using the live price above. "
-            "Be specific with strike percentages and expiry dates."
+            "6. OPTIONS: No live options chain available for this ticker. "
+            "Set options_plays to an empty array []."
         )
 
     prompt = f"""You are a sophisticated event-driven investment analyst. Analyse this event and provide a complete investment analysis.
