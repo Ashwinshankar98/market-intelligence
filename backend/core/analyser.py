@@ -117,7 +117,7 @@ def deep_analysis(headline: str, summary: str, category: str,
 
     # Fetch prices with short timeout — skip silently if slow
     price_context = {}
-    for t in tickers[:3]:  # max 3 tickers to keep it fast
+    for t in tickers[:3]:
         try:
             p = _get_current_price(t)
             if p:
@@ -126,7 +126,7 @@ def deep_analysis(headline: str, summary: str, category: str,
             pass
     price_str = ""
     if price_context:
-        price_str = "\nCurrent live prices (use these for strike recommendations):\n"
+        price_str = "\nCurrent live prices:\n"
         for t, p in price_context.items():
             price_str += f"  {t}: ${p}\n"
 
@@ -147,6 +147,41 @@ def deep_analysis(headline: str, summary: str, category: str,
                 for t, c in corr:
                     pos_str += f"  {t} affects your: {', '.join(c)}\n"
 
+    # Fetch real options chain from Alpaca for the primary ticker
+    options_str = ""
+    real_contracts = []
+    primary_ticker = tickers[0] if tickers else None
+    primary_price  = price_context.get(primary_ticker, 0) if primary_ticker else 0
+    if primary_ticker and primary_price > 0:
+        try:
+            from core.options_chain import get_options_chain
+            real_contracts = get_options_chain(primary_ticker, primary_price)
+        except Exception as e:
+            print(f"[Options] Chain fetch failed for {primary_ticker}: {e}")
+
+    if real_contracts:
+        options_str = f"\nREAL OPTIONS CHAIN for {primary_ticker} (from Alpaca — these are live, tradeable contracts):\n"
+        for c in real_contracts:
+            g = c["greeks"]
+            options_str += (
+                f"  {c['symbol']}  {c['type'].upper()}  strike=${c['strike']}  "
+                f"exp={c['expiry']} ({c['days_out']}d)  {c['moneyness']}\n"
+                f"    bid=${c['bid']}  ask=${c['ask']}  mid=${c['mid']}  "
+                f"spread={c['spread_pct']}%  IV={c['iv_pct']}%  cost/contract=${c['cost_per_contract']}\n"
+                f"    delta={g.get('delta')}  gamma={g.get('gamma')}  "
+                f"theta={g.get('theta')}/day  vega={g.get('vega')}\n"
+            )
+        options_instruction = (
+            "6. OPTIONS: Choose from the REAL CONTRACTS above — do NOT invent strikes. "
+            "Pick the best 1-2 based on the greeks and catalyst. Use the exact symbol from the chain. "
+            "Explain your greek-based reasoning (e.g. why this delta/theta tradeoff fits the catalyst timeline)."
+        )
+    else:
+        options_instruction = (
+            "6. OPTIONS: No live chain available — estimate strikes using the live price above. "
+            "Be specific with strike percentages and expiry dates."
+        )
+
     prompt = f"""You are a sophisticated event-driven investment analyst. Analyse this event and provide a complete investment analysis.
 
 Today: {today}
@@ -155,15 +190,14 @@ Category: {category}
 Tickers: {', '.join(tickers) if tickers else 'unknown'}
 Headline: {headline}
 Detail: {summary[:600] if summary else 'N/A'}
-{price_str}
-{pos_str}
-
+{price_str}{pos_str}{options_str}
 IMPORTANT INSTRUCTIONS:
-1. Use the live prices provided above for ALL strike price recommendations
-2. For Buy/Hold/Sell: first cite FACTS from news/analysts, then separately give Claude opinion
+1. Use the live prices above for all price references
+2. For Buy/Hold/Sell: first cite FACTS from news/analysts, then separately give your opinion
 3. For each option play include a risk_reward_score (1-10, where 10 is best risk/reward)
 4. For held positions: state ADD/HOLD/REDUCE with factual reasoning
 5. Keep individual text fields concise but DO NOT truncate — complete every field fully
+{options_instruction}
 
 Respond ONLY with raw JSON. No markdown. Start with open brace.
 
@@ -175,8 +209,8 @@ Respond ONLY with raw JSON. No markdown. Start with open brace.
   "current_price": 185.50,
   "buy_hold_sell": {{
     "recommendation": "BUY",
-    "analyst_facts": "Goldman Sachs raised PT to $220. Q2 revenue beat by 8%. Three analysts upgraded to Strong Buy this week. Custom ASIC pipeline expanding with 3 new hyperscaler contracts.",
-    "claude_opinion": "The VMware integration margin expansion combined with AI revenue acceleration creates a compounding growth story. Street estimates likely still too conservative for FY2027."
+    "analyst_facts": "Goldman Sachs raised PT to $220. Q2 revenue beat by 8%. Three analysts upgraded to Strong Buy this week.",
+    "claude_opinion": "VMware integration margin expansion combined with AI revenue acceleration creates a compounding growth story."
   }},
   "reasoning_chain": [
     {{"step": "Event", "text": "full description without truncation"}},
@@ -210,16 +244,25 @@ Respond ONLY with raw JSON. No markdown. Start with open brace.
       "ticker": "AVGO",
       "type": "call",
       "role": "primary",
+      "alpaca_symbol": "AVGO260620C00190000",
       "current_price": 185.50,
-      "strike_note": "$195 (5.1% OTM based on current $185.50)",
-      "expiry_note": "Aug 15 2026 — 12 days past next earnings",
-      "days_out": 89,
+      "strike_note": "$190 (2.4% OTM)",
+      "expiry_note": "Jun 20 2026 — 32 days, covers earnings catalyst",
+      "days_out": 32,
+      "bid": 8.50,
+      "ask": 8.80,
+      "mid": 8.65,
+      "spread_pct": 3.5,
+      "iv_pct": 42.0,
+      "cost_per_contract": 865.00,
+      "greeks": {{"delta": 0.48, "gamma": 0.012, "theta": -0.18, "vega": 0.22}},
+      "greek_reasoning": "0.48 delta gives good leverage while theta -0.18/day is manageable for a 30-day hold into earnings",
       "reasoning": "Complete reasoning without truncation",
       "entry_strategy": "Complete entry instructions",
       "profit_target": "Exact target with reasoning",
       "stop_loss": "Exact stop with reasoning",
       "time_stop": "Exit date with reasoning",
-      "iv_warning": "Current IV assessment",
+      "iv_warning": "IV at 42% is elevated pre-earnings — size accordingly",
       "risk_reward_score": 7,
       "max_loss_pct": 40,
       "confidence": 75
@@ -227,7 +270,7 @@ Respond ONLY with raw JSON. No markdown. Start with open brace.
   ],
   "act_by_hours": 48,
   "catalyst_date": "2026-06-01",
-  "iv_environment": "normal",
+  "iv_environment": "elevated",
   "risk_level": "medium",
   "ripple_tickers": ["AMD", "SMCI"],
   "summary_one_line": "Complete one-line thesis"
