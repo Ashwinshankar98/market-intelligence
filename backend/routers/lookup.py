@@ -2,6 +2,7 @@ import os, json, re, asyncio, time
 import httpx
 import feedparser
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from core.analyser import _clean_json, _salvage_json
 from core.portfolio import get_position_context, HOLDINGS
 import anthropic
@@ -56,20 +57,6 @@ async def _fetch_top_news(ticker: str, max_articles: int = 5) -> list:
         return []
 
 
-@router.post("/lookup")
-async def lookup_ticker(body: dict):
-    try:
-        return await asyncio.wait_for(_do_lookup(body), timeout=50.0)
-    except asyncio.TimeoutError:
-        return {
-            "error": "Analysis timed out — try again",
-            "score": 0,
-            "is_manual_lookup": True,
-            "primary_ticker": body.get("ticker", "").upper(),
-            "headline": f"{body.get('ticker','').upper()} analysis timed out",
-        }
-
-
 def _resolve_to_ticker(user_input: str) -> str:
     """Resolve a company name to its ticker using yfinance Search."""
     import re as _re
@@ -92,24 +79,40 @@ def _resolve_to_ticker(user_input: str) -> str:
     return cleaned
 
 
-async def _do_lookup(body: dict):
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event)}\n\n"
+
+
+async def _do_lookup_stream(body: dict):
+    """
+    Async generator yielding SSE-style progress dicts then a final result dict.
+    Consumers iterate with `async for event in _do_lookup_stream(body)`.
+    """
+    import datetime, time as _time
     raw_input = body.get("ticker", "").strip()
     if not raw_input:
-        return {"error": "ticker is required"}
+        yield {"type": "result", "data": {"error": "ticker is required"}}
+        return
 
-    # Resolve company name → ticker in a thread (yfinance Search is sync)
-    loop    = asyncio.get_event_loop()
-    ticker  = await loop.run_in_executor(None, _resolve_to_ticker, raw_input)
-    company = body.get("company", raw_input)  # keep original name for display
+    t0 = _time.monotonic()
+    loop = asyncio.get_event_loop()
+
+    def elapsed():
+        return round(_time.monotonic() - t0, 1)
+
+    # ── Step 1: Resolve ticker ─────────────────────────────────────────────────
+    yield {"type": "progress", "step": "resolving", "msg": f"Resolving '{raw_input}'...", "done": False}
+    ticker = await loop.run_in_executor(None, _resolve_to_ticker, raw_input)
+    yield {"type": "progress", "step": "resolving", "msg": f"→ {ticker}", "elapsed": elapsed(), "done": True}
+
+    company = body.get("company", raw_input)
     context = body.get("context", "")
+    today   = datetime.date.today().isoformat()
 
-    import datetime
-    today = datetime.date.today().isoformat()
-
-    # Fetch news and price in parallel
+    # ── Step 2: News + price in parallel ──────────────────────────────────────
+    yield {"type": "progress", "step": "price", "msg": f"Fetching price & news for {ticker}...", "done": False}
     news_task  = asyncio.create_task(_fetch_top_news(ticker))
-    price_task = asyncio.get_event_loop().run_in_executor(None, _get_price_safe, ticker)
-
+    price_task = loop.run_in_executor(None, _get_price_safe, ticker)
     try:
         articles, current_price = await asyncio.wait_for(
             asyncio.gather(news_task, price_task, return_exceptions=True),
@@ -122,8 +125,9 @@ async def _do_lookup(body: dict):
     if isinstance(articles, Exception):      articles      = []
     if isinstance(current_price, Exception): current_price = None
 
-    # If yfinance failed, try Alpaca stock quote as fallback
+    # Alpaca fallback for price
     if not current_price:
+        yield {"type": "progress", "step": "price", "msg": "yfinance failed — trying Alpaca...", "done": False}
         try:
             from core.options_chain import _fetch_price_from_alpaca
             api_key = os.getenv("ALPACA_API_KEY", "")
@@ -132,13 +136,16 @@ async def _do_lookup(body: dict):
                 alpaca_price = _fetch_price_from_alpaca(ticker, api_key, secret)
                 if alpaca_price > 0:
                     current_price = alpaca_price
-                    print(f"[Lookup] Using Alpaca price fallback for {ticker}: ${current_price}")
         except Exception:
             pass
 
     price_val    = current_price if current_price else 0
     price_str    = f"${current_price}" if current_price else "estimate from your knowledge"
     price_source = "live" if current_price else "estimated"
+    price_msg    = f"${price_val} (live)" if current_price else "no price — Claude will estimate"
+    yield {"type": "progress", "step": "price",
+           "msg": f"{price_msg} · {len(articles or [])} news articles",
+           "elapsed": elapsed(), "done": True}
 
     news_lines = [f"[{a.get('date','')}] {a.get('title','')}" for a in (articles or [])[:5]]
     news_str   = "\n".join(news_lines) if news_lines else "No recent news found."
@@ -162,21 +169,26 @@ async def _do_lookup(body: dict):
     else:
         held_positions_template = "[]"
 
-    # Fetch real options chain from Alpaca
+    # ── Step 3: Options chain ─────────────────────────────────────────────────
     real_contracts = []
     options_source = "no_chain"
     if price_val > 0:
+        yield {"type": "progress", "step": "options",
+               "msg": f"Fetching options chain for {ticker} @ ${price_val}...", "done": False}
         try:
             from core.options_chain import get_options_chain
             real_contracts = get_options_chain(ticker, price_val)
             options_source = "alpaca" if real_contracts else "no_chain"
-            if not real_contracts:
-                print(f"[Options/Lookup] Chain empty for {ticker}")
+            opts_msg = f"{len(real_contracts)} contracts (Alpaca)" if real_contracts else "not optionable / no chain"
         except Exception as e:
             options_source = "error"
-            print(f"[Options/Lookup] Chain fetch failed for {ticker}: {e}")
+            opts_msg = f"error fetching chain"
+        yield {"type": "progress", "step": "options",
+               "msg": opts_msg, "elapsed": elapsed(), "done": True}
     else:
         options_source = "no_price"
+        yield {"type": "progress", "step": "options",
+               "msg": "Skipped (no price available)", "elapsed": elapsed(), "done": True}
 
     if real_contracts:
         options_chain_str = f"\nREAL OPTIONS CHAIN for {ticker} (from Alpaca — live tradeable contracts):\n"
@@ -248,7 +260,11 @@ Return this exact JSON structure:
   "news_used":{json.dumps([a.get('title','')[:60] for a in (articles or [])[:3]])}
 }}"""
 
+    # ── Step 4: Claude analysis ───────────────────────────────────────────────
+    yield {"type": "progress", "step": "claude", "msg": "Calling Claude...", "done": False}
+
     response = None
+    result   = None
     for attempt in range(2):
         try:
             response = client.messages.create(
@@ -259,22 +275,14 @@ Return this exact JSON structure:
             )
             text   = _clean_json(response.content[0].text)
             result = json.loads(text)
-            result["is_manual_lookup"] = True
-            result["lookup_ticker"]    = ticker
-            result["price_source"]     = price_source
-            result["options_source"]   = options_source
-            return result
+            break
 
         except json.JSONDecodeError:
             try:
                 raw    = response.content[0].text if response else ""
                 result = _salvage_json(raw)
                 if result and result.get("primary_ticker"):
-                    result["is_manual_lookup"] = True
-                    result["lookup_ticker"]    = ticker
-                    result["price_source"]     = price_source
-                    result["options_source"]   = options_source
-                    return result
+                    break
             except Exception:
                 pass
             if attempt < 1:
@@ -288,24 +296,81 @@ Return this exact JSON structure:
             try:
                 if response:
                     result = _salvage_json(response.content[0].text)
-                    if result:
-                        result["is_manual_lookup"] = True
-                        result["lookup_ticker"]    = ticker
-                        result["price_source"]     = price_source
-                        result["options_source"]   = options_source
-                        return result
             except Exception:
                 pass
-            return {
-                "error": str(e)[:200], "score": 0,
-                "is_manual_lookup": True, "primary_ticker": ticker,
-                "headline": f"{ticker} analysis failed"
-            }
+            if not result:
+                err = {
+                    "error": str(e)[:200], "score": 0,
+                    "is_manual_lookup": True, "primary_ticker": ticker,
+                    "headline": f"{ticker} analysis failed"
+                }
+                yield {"type": "progress", "step": "claude",
+                       "msg": f"Failed: {str(e)[:60]}", "elapsed": elapsed(), "done": True, "error": True}
+                yield {"type": "result", "data": err}
+                return
 
-    return {
-        "error": "Max retries", "score": 0,
-        "is_manual_lookup": True, "primary_ticker": ticker,
-        "headline": f"{ticker} analysis"
-    }
+    if not result:
+        err = {
+            "error": "Max retries", "score": 0,
+            "is_manual_lookup": True, "primary_ticker": ticker,
+            "headline": f"{ticker} analysis"
+        }
+        yield {"type": "progress", "step": "claude",
+               "msg": "Failed after retries", "elapsed": elapsed(), "done": True, "error": True}
+        yield {"type": "result", "data": err}
+        return
+
+    result["is_manual_lookup"] = True
+    result["lookup_ticker"]    = ticker
+    result["price_source"]     = price_source
+    result["options_source"]   = options_source
+
+    yield {"type": "progress", "step": "claude",
+           "msg": f"Analysis complete · score {result.get('score', 0)}", "elapsed": elapsed(), "done": True}
+    yield {"type": "result", "data": result}
 
 
+# ── Endpoints ──────────────────────────────────────────────────────────────────
+
+@router.post("/lookup/stream")
+async def lookup_ticker_stream(body: dict):
+    """SSE endpoint — streams real-time progress then final result."""
+    async def generate():
+        try:
+            async for event in _do_lookup_stream(body):
+                yield _sse(event)
+        except Exception as e:
+            yield _sse({"type": "error", "msg": str(e)[:200]})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/lookup")
+async def lookup_ticker(body: dict):
+    """Non-streaming fallback — drains the generator and returns the final result."""
+    try:
+        async def _drain():
+            async for event in _do_lookup_stream(body):
+                if event.get("type") == "result":
+                    return event.get("data", {})
+            return None
+
+        result = await asyncio.wait_for(_drain(), timeout=50.0)
+        if result:
+            return result
+        ticker = body.get("ticker", "").upper()
+        return {"error": "No result", "score": 0, "is_manual_lookup": True, "primary_ticker": ticker}
+
+    except asyncio.TimeoutError:
+        ticker = body.get("ticker", "").upper()
+        return {
+            "error": "Analysis timed out — try again",
+            "score": 0,
+            "is_manual_lookup": True,
+            "primary_ticker": ticker,
+            "headline": f"{ticker} analysis timed out",
+        }

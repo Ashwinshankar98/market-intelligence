@@ -419,45 +419,61 @@ function SignalDetail({ signal, onBack, isMobile }) {
   );
 }
 
+const STEP_LABELS = { resolving: "Ticker", price: "Price & News", options: "Options Chain", claude: "Claude Analysis" };
+
 function SearchBar({ onResult }) {
   const [ticker, setTicker] = useState("");
   const [context, setContext] = useState("");
   const [loading, setLoading] = useState(false);
-  const [step, setStep] = useState(0);
+  const [steps, setSteps] = useState([]);
   const [error, setError] = useState("");
 
-  const STEPS = [
-    "Fetching latest news...",
-    "Getting current price...",
-    "Sending to Claude...",
-    "Building analysis...",
-    "Almost done...",
-  ];
+  const upsertStep = (event) =>
+    setSteps(prev => {
+      const idx = prev.findIndex(s => s.step === event.step);
+      if (idx >= 0) { const next = [...prev]; next[idx] = event; return next; }
+      return [...prev, event];
+    });
 
   const handleSearch = async () => {
     if (!ticker.trim()) return;
     setLoading(true);
     setError("");
-    setStep(0);
-    const iv = setInterval(() => setStep(p => p < STEPS.length - 1 ? p + 1 : p), 8000);
+    setSteps([]);
     try {
-      const resp = await fetch(`${API}/api/lookup`, {
+      const resp = await fetch(`${API}/api/lookup/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticker: ticker.toUpperCase().trim(), company: ticker.trim(), context: context.trim() }),
+        body: JSON.stringify({ ticker: ticker.trim(), company: ticker.trim(), context: context.trim() }),
       });
-      const data = await resp.json();
-      if (data.error && !data.primary_ticker) {
-        setError(data.error);
-      } else {
-        onResult(data);
+      if (!resp.ok) throw new Error("Request failed");
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const ev = JSON.parse(line.slice(6));
+            if (ev.type === "progress") upsertStep(ev);
+            else if (ev.type === "result") {
+              if (ev.data.error && !ev.data.primary_ticker) setError(ev.data.error);
+              else onResult(ev.data);
+            } else if (ev.type === "error") {
+              setError(ev.msg || "Analysis failed");
+            }
+          } catch (_) {}
+        }
       }
     } catch (e) {
       setError("Failed to connect");
     } finally {
-      clearInterval(iv);
       setLoading(false);
-      setStep(0);
     }
   };
 
@@ -467,7 +483,7 @@ function SearchBar({ onResult }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <div style={{ display: "flex", gap: 8 }}>
           <input value={ticker} onChange={e => setTicker(e.target.value)} onKeyDown={e => e.key === "Enter" && handleSearch()}
-            placeholder="Ticker (e.g. META)"
+            placeholder="Ticker or company name"
             style={{ background: "#080810", border: "0.5px solid #2a2a4a", borderRadius: 6, color: "#e2e8f0", fontSize: 12, padding: "8px 12px", fontFamily: "inherit", width: "35%", outline: "none" }} />
           <input value={context} onChange={e => setContext(e.target.value)} onKeyDown={e => e.key === "Enter" && handleSearch()}
             placeholder="Context (e.g. recent layoffs)"
@@ -479,17 +495,29 @@ function SearchBar({ onResult }) {
           </button>
           {error ? <div style={{ fontSize: 11, color: "#f87171" }}>{error}</div> : null}
         </div>
-        {loading ? (
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-              <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#a78bfa", animation: "pulse 1s infinite" }} />
-              <div style={{ fontSize: 11, color: "#a78bfa" }}>{STEPS[step]}</div>
-            </div>
-            <div style={{ display: "flex", gap: 4 }}>
-              {STEPS.map((_, i) => (
-                <div key={i} style={{ height: 2, flex: 1, borderRadius: 1, background: i <= step ? "#a78bfa" : "#1e1e35", transition: "background 0.5s" }} />
-              ))}
-            </div>
+        {(loading || steps.length > 0) && !error ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "8px 0 2px" }}>
+            {steps.map(s => (
+              <div key={s.step} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {s.error
+                  ? <span style={{ fontSize: 12, color: "#f87171", lineHeight: 1 }}>✗</span>
+                  : s.done
+                    ? <span style={{ fontSize: 12, color: "#4ade80", lineHeight: 1 }}>✓</span>
+                    : <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#a78bfa", flexShrink: 0, animation: "pulse 1s infinite" }} />
+                }
+                <span style={{ fontSize: 10, color: "#6b6b8a", letterSpacing: 1, minWidth: 90 }}>{STEP_LABELS[s.step] || s.step}</span>
+                <span style={{ fontSize: 11, color: s.error ? "#f87171" : s.done ? "#94a3b8" : "#a78bfa" }}>{s.msg}</span>
+                {s.elapsed != null && s.done
+                  ? <span style={{ fontSize: 10, color: "#3a3a5a", marginLeft: "auto" }}>{s.elapsed}s</span>
+                  : null}
+              </div>
+            ))}
+            {loading && steps.length === 0
+              ? <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#a78bfa", animation: "pulse 1s infinite" }} />
+                  <span style={{ fontSize: 11, color: "#a78bfa" }}>Starting...</span>
+                </div>
+              : null}
           </div>
         ) : null}
       </div>
