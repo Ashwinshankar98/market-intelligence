@@ -9,7 +9,7 @@ import anthropic
 
 router = APIRouter(prefix="/api", tags=["lookup"])
 
-client       = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+client       = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"), max_retries=0)
 MODEL        = "claude-sonnet-4-6"
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
@@ -125,7 +125,7 @@ async def _do_lookup_stream(body: dict):
     if isinstance(articles, Exception):      articles      = []
     if isinstance(current_price, Exception): current_price = None
 
-    # Alpaca fallback for price
+    # Alpaca fallback for price — run in executor (blocking sync client)
     if not current_price:
         yield {"type": "progress", "step": "price", "msg": "yfinance failed — trying Alpaca...", "done": False}
         try:
@@ -133,7 +133,9 @@ async def _do_lookup_stream(body: dict):
             api_key = os.getenv("ALPACA_API_KEY", "")
             secret  = os.getenv("ALPACA_SECRET_KEY", "")
             if api_key and secret:
-                alpaca_price = _fetch_price_from_alpaca(ticker, api_key, secret)
+                alpaca_price = await loop.run_in_executor(
+                    None, _fetch_price_from_alpaca, ticker, api_key, secret
+                )
                 if alpaca_price > 0:
                     current_price = alpaca_price
         except Exception:
@@ -177,7 +179,8 @@ async def _do_lookup_stream(body: dict):
                "msg": f"Fetching options chain for {ticker} @ ${price_val}...", "done": False}
         try:
             from core.options_chain import get_options_chain
-            real_contracts = get_options_chain(ticker, price_val)
+            # blocking sync client — run in executor to avoid stalling the event loop
+            real_contracts = await loop.run_in_executor(None, get_options_chain, ticker, price_val)
             options_source = "alpaca" if real_contracts else "no_chain"
             opts_msg = f"{len(real_contracts)} contracts (Alpaca)" if real_contracts else "not optionable / no chain"
         except Exception as e:
@@ -261,21 +264,44 @@ Return this exact JSON structure:
 }}"""
 
     # ── Step 4: Claude analysis ───────────────────────────────────────────────
+    # Run the sync Anthropic client in a thread so the event loop stays live
+    # and asyncio.wait_for can actually cancel it on timeout.
+    # max_retries=0 on the client means this is a single 35s attempt.
     yield {"type": "progress", "step": "claude", "msg": "Calling Claude...", "done": False}
+
+    def _call_claude():
+        return client.messages.create(
+            model=MODEL,
+            max_tokens=2000,
+            timeout=60.0,
+            messages=[{"role": "user", "content": prompt}]
+        )
 
     response = None
     result   = None
     for attempt in range(2):
         try:
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=2000,
-                timeout=40.0,
-                messages=[{"role": "user", "content": prompt}]
+            response = await asyncio.wait_for(
+                loop.run_in_executor(None, _call_claude),
+                timeout=65.0
             )
             text   = _clean_json(response.content[0].text)
             result = json.loads(text)
             break
+
+        except asyncio.TimeoutError:
+            err_msg = "Request timed out"
+            if attempt < 1:
+                yield {"type": "progress", "step": "claude", "msg": "Timeout — retrying...", "done": False}
+                await asyncio.sleep(1)
+                continue
+            yield {"type": "progress", "step": "claude",
+                   "msg": f"Failed: {err_msg}", "elapsed": elapsed(), "done": True, "error": True}
+            yield {"type": "result", "data": {
+                "error": err_msg, "score": 0, "is_manual_lookup": True,
+                "primary_ticker": ticker, "headline": f"{ticker} analysis timed out"
+            }}
+            return
 
         except json.JSONDecodeError:
             try:
@@ -286,12 +312,12 @@ Return this exact JSON structure:
             except Exception:
                 pass
             if attempt < 1:
-                time.sleep(1)
+                await asyncio.sleep(1)
                 continue
 
         except Exception as e:
             if attempt < 1:
-                time.sleep(1)
+                await asyncio.sleep(1)
                 continue
             try:
                 if response:
