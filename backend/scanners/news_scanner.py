@@ -1,9 +1,14 @@
-import os, json, hashlib, email.utils
+import os, json, hashlib, email.utils, asyncio
 import feedparser
 import httpx
 from datetime import datetime, timedelta
 from database import get_connection
 from core.tripwire import run_tripwire
+
+# Browser-like UA avoids Google News rate-limiting feedparser's default UA
+_FEEDPARSER_UA = (
+    "Mozilla/5.0 (compatible; MarketIntelBot/1.0; +https://github.com/Ashwinshankar98/market-intelligence)"
+)
 
 # ── Age filter — ignore articles older than this ──────────────────────────────
 MAX_ARTICLE_AGE_HOURS = int(os.getenv("MAX_ARTICLE_AGE_HOURS", 48))
@@ -151,9 +156,19 @@ async def scan_rss_feeds() -> list:
     total_seen   = 0   # fetched from feeds
     already_done = 0   # already in processed_urls
 
+    last_google = 0  # track last Google News fetch time for staggering
+
     for feed_url, source in RSS_FEEDS:
         try:
-            feed       = feedparser.parse(feed_url)
+            # Stagger Google News fetches by 1s to avoid burst rate-limiting
+            if "news.google.com" in feed_url:
+                now = asyncio.get_event_loop().time()
+                gap = now - last_google
+                if gap < 1.0:
+                    await asyncio.sleep(1.0 - gap)
+                last_google = asyncio.get_event_loop().time()
+
+            feed       = feedparser.parse(feed_url, agent=_FEEDPARSER_UA)
             n_entries  = len(feed.entries)
             if n_entries == 0:
                 print(f"[RSS] Empty/unreachable: {feed_url[8:60]}")
