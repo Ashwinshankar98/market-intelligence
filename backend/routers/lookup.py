@@ -122,8 +122,9 @@ async def _do_lookup(body: dict):
     if isinstance(articles, Exception):      articles      = []
     if isinstance(current_price, Exception): current_price = None
 
-    price_val = current_price if current_price else 0
-    price_str = f"${current_price}" if current_price else "estimate from your knowledge"
+    price_val  = current_price if current_price else 0
+    price_str  = f"${current_price}" if current_price else "estimate from your knowledge"
+    price_source = "live" if current_price else "estimated"
 
     news_lines = [f"[{a.get('date','')}] {a.get('title','')}" for a in (articles or [])[:5]]
     news_str   = "\n".join(news_lines) if news_lines else "No recent news found."
@@ -136,7 +137,6 @@ async def _do_lookup(body: dict):
         pos_note    = f"YOU HOLD: {h['shares']} shares @ avg ${h['avg_cost']} (equity ${h['equity']:,})"
         held_equity = h['equity']
 
-    # Only include a held_positions template entry when the user actually holds the ticker
     if is_held:
         held_positions_template = f"""[{{
       "ticker":"{ticker}",
@@ -148,6 +148,54 @@ async def _do_lookup(body: dict):
     else:
         held_positions_template = "[]"
 
+    # Fetch real options chain from Alpaca
+    real_contracts = []
+    options_source = "no_chain"
+    if price_val > 0:
+        try:
+            from core.options_chain import get_options_chain
+            real_contracts = get_options_chain(ticker, price_val)
+            options_source = "alpaca" if real_contracts else "no_chain"
+            if not real_contracts:
+                print(f"[Options/Lookup] Chain empty for {ticker}")
+        except Exception as e:
+            options_source = "error"
+            print(f"[Options/Lookup] Chain fetch failed for {ticker}: {e}")
+    else:
+        options_source = "no_price"
+
+    if real_contracts:
+        options_chain_str = f"\nREAL OPTIONS CHAIN for {ticker} (from Alpaca — live tradeable contracts):\n"
+        for c in real_contracts:
+            g = c["greeks"]
+            options_chain_str += (
+                f"  {c['symbol']}  {c['type'].upper()}  strike=${c['strike']}  "
+                f"exp={c['expiry']} ({c['days_out']}d)  {c['moneyness']}\n"
+                f"    bid=${c['bid']}  ask=${c['ask']}  mid=${c['mid']}  "
+                f"spread={c['spread_pct']}%  IV={c['iv_pct']}%  cost/contract=${c['cost_per_contract']}\n"
+                f"    delta={g.get('delta')}  gamma={g.get('gamma')}  "
+                f"theta={g.get('theta')}/day  vega={g.get('vega')}\n"
+            )
+        options_instruction = (
+            "OPTIONS: Choose from the REAL CONTRACTS above — do NOT invent strikes. "
+            "Pick the best 1-2 based on greeks and the thesis. Use the exact symbol. "
+            "Include alpaca_symbol, bid, ask, mid, spread_pct, iv_pct, cost_per_contract, greeks, and greek_reasoning fields."
+        )
+        options_plays_template = """[{
+      "ticker":"TICKER","type":"call","role":"primary","alpaca_symbol":"TICKER260620C00190000",
+      "current_price":185.50,"strike_note":"$190 (2.4% OTM)","expiry_note":"Jun 20 2026 — reason",
+      "days_out":32,"bid":8.50,"ask":8.80,"mid":8.65,"spread_pct":3.5,"iv_pct":42.0,
+      "cost_per_contract":865.00,"greeks":{"delta":0.48,"gamma":0.012,"theta":-0.18,"vega":0.22},
+      "greek_reasoning":"why this delta/theta fits the catalyst timeline",
+      "reasoning":"complete reasoning","entry_strategy":"when and how to enter",
+      "profit_target":"specific target","stop_loss":"specific stop","time_stop":"exit by date",
+      "iv_warning":"IV environment assessment","risk_reward_score":7,"max_loss_pct":40,"confidence":75
+    }]"""
+    else:
+        options_chain_str    = ""
+        options_instruction  = "OPTIONS: No live chain available — set options_plays to []."
+        options_plays_template = "[]"
+
     prompt = f"""Analyse {ticker} for investment. Return ONLY raw JSON starting with {{
 
 Date:{today} Price:{price_str}{f" Context:{context}" if context else ""}
@@ -155,18 +203,19 @@ Date:{today} Price:{price_str}{f" Context:{context}" if context else ""}
 
 News headlines:
 {news_str}
-
-IMPORTANT for buy_hold_sell:
-- analyst_facts: Quote actual facts FROM THE NEWS ABOVE — analyst price targets, upgrades, earnings data, specific numbers. Do not use generic statements.
-- claude_opinion: Your own separate view on the investment thesis. Be specific about risks and upside.
+{options_chain_str}
+IMPORTANT:
+- analyst_facts: Quote actual facts FROM THE NEWS ABOVE — analyst price targets, upgrades, earnings data, specific numbers.
+- claude_opinion: Your own separate view on the investment thesis.
+- {options_instruction}
 
 Return this exact JSON structure:
 {{
   "score":82,"event_category":"earnings","primary_ticker":"{ticker}","sector":"Technology","current_price":{price_val},
   "buy_hold_sell":{{
     "recommendation":"BUY",
-    "analyst_facts":"Specific facts from news above — e.g. BofA raised PT to $950, Samsung strike disrupting supply, new DDR5 product launch announced",
-    "claude_opinion":"Your own assessment — e.g. The dip is a buying opportunity because supply disruption benefits MU's pricing power long term"
+    "analyst_facts":"Specific facts from news above",
+    "claude_opinion":"Your own assessment"
   }},
   "reasoning_chain":[
     {{"step":"Situation","text":"current state of {ticker}"}},
@@ -179,15 +228,7 @@ Return this exact JSON structure:
     "correlation_alerts":[],
     "hedge_suggestion":null
   }},
-  "options_plays":[{{
-    "ticker":"{ticker}","type":"call","role":"primary","current_price":{price_val},
-    "strike_note":"strike with % OTM calculation","expiry_note":"Month DD YYYY — reason",
-    "days_out":45,"reasoning":"complete reasoning for this specific play",
-    "entry_strategy":"when and how to enter","profit_target":"specific price target",
-    "stop_loss":"specific stop price","time_stop":"exit by date",
-    "iv_warning":"current IV environment and advice",
-    "risk_reward_score":7,"max_loss_pct":40,"confidence":75
-  }}],
+  "options_plays":{options_plays_template},
   "act_by_hours":48,"catalyst_date":"{today}","iv_environment":"normal",
   "risk_level":"medium","ripple_tickers":[],"summary_one_line":"one line thesis",
   "news_used":{json.dumps([a.get('title','')[:60] for a in (articles or [])[:3]])}
@@ -206,7 +247,8 @@ Return this exact JSON structure:
             result = json.loads(text)
             result["is_manual_lookup"] = True
             result["lookup_ticker"]    = ticker
-            result["price_source"]     = "live" if current_price else "estimated"
+            result["price_source"]     = price_source
+            result["options_source"]   = options_source
             return result
 
         except json.JSONDecodeError:
@@ -216,6 +258,8 @@ Return this exact JSON structure:
                 if result and result.get("primary_ticker"):
                     result["is_manual_lookup"] = True
                     result["lookup_ticker"]    = ticker
+                    result["price_source"]     = price_source
+                    result["options_source"]   = options_source
                     return result
             except Exception:
                 pass
@@ -233,6 +277,8 @@ Return this exact JSON structure:
                     if result:
                         result["is_manual_lookup"] = True
                         result["lookup_ticker"]    = ticker
+                        result["price_source"]     = price_source
+                        result["options_source"]   = options_source
                         return result
             except Exception:
                 pass
