@@ -8,15 +8,15 @@ An AI-powered event-driven market intelligence system that scans global news, SE
 
 ## What it does
 
-- Scans 1,000+ news sources every hour for market-moving events
+- Scans 30+ RSS feeds every hour across CNBC, Google News, Yahoo Finance (hedge funds, sectors, holdings)
 - Tracks 25+ famous investors and hedge funds (Ackman, Cathie Wood, Buffett, Druckenmiller, Burry, and more)
 - Monitors SEC EDGAR for insider buys (Form 4) and material events (8-K)
 - Tracks Reddit sentiment spikes across WSB, r/stocks, r/investing, r/semiconductors
 - Reasons through full event chains (1st → 2nd → 3rd order effects)
-- Generates specific options plays with exact strike prices, expiry dates, entry strategy, profit target, stop loss, and time stop
+- Fetches **live options chains from Alpaca** — real strikes, real bid/ask, real greeks (delta, gamma, theta, vega, IV) — Claude selects from actual tradeable contracts instead of hallucinating them
 - Portfolio-aware — knows your holdings, flags correlation alerts, says ADD/HOLD/REDUCE on positions you own
 - Sends Telegram alerts to a dedicated intelligence group
-- Dashboard with 7D / 30D / ALL time filters, MY SECTORS view, and manual ticker lookup
+- Dashboard with 7D / 30D / ALL time filters, MY SECTORS view, and manual ticker lookup (supports company names, not just tickers)
 - Self-improving — every Sunday Claude reviews the week and adjusts keyword weights intelligently
 
 ## Signal types
@@ -41,8 +41,9 @@ An AI-powered event-driven market intelligence system that scans global news, SE
 - **Database**: SQLite with active_weights table for self-improvement
 - **Dashboard**: React — hosted on Vercel
 - **LLM**: Claude Sonnet 4.6 (4-tier analysis pipeline)
+- **Options data**: Alpaca — live chain with greeks via Black-Scholes
 - **Alerts**: Telegram (dedicated intelligence group)
-- **Data**: Reuters RSS, Google News RSS, SEC EDGAR, NewsAPI, Reddit, Yahoo Finance RSS
+- **Data**: CNBC RSS, Google News RSS, Yahoo Finance RSS, SEC EDGAR, NewsAPI, Reddit
 
 ## Project Structure
 
@@ -54,8 +55,9 @@ market-intelligence/
 │   ├── requirements.txt
 │   ├── core/
 │   │   ├── analyser.py          # All 4 Claude tiers + weight-aware scoring
-│   │   ├── orchestrator.py      # Full pipeline with dedup and cost controls
-│   │   ├── tripwire.py          # Zero-cost keyword filter (ticker-gated)
+│   │   ├── orchestrator.py      # Full pipeline with dedup, semaphore concurrency control
+│   │   ├── tripwire.py          # Zero-cost keyword filter (ticker + company name gated)
+│   │   ├── options_chain.py     # Alpaca live options chain + Black-Scholes greeks
 │   │   ├── notifier.py          # Telegram alerts with portfolio impact section
 │   │   └── portfolio.py         # Your holdings, correlations, sector priorities
 │   ├── scanners/
@@ -64,7 +66,7 @@ market-intelligence/
 │   │   └── reddit_scanner.py    # WSB + r/stocks + r/semiconductors
 │   └── routers/
 │       ├── api.py               # Signals, stats, weights endpoints
-│       └── lookup.py            # Manual ticker lookup with exit strategy
+│       └── lookup.py            # Manual ticker/company lookup with company→ticker resolution
 └── frontend/
     ├── index.html
     ├── package.json
@@ -78,9 +80,9 @@ market-intelligence/
 
 | Tier | Frequency | Claude cost | What it does |
 |------|-----------|-------------|--------------|
-| Tier 1 — Tripwire | Every 15 min | **$0** | Keyword regex. Generic events only pass if a watchlist ticker is mentioned. Famous investor and sector-wide events always pass. |
+| Tier 1 — Tripwire | Every 15 min | **$0** | Keyword regex. Generic events only pass if a watchlist ticker or company name is mentioned. Famous investor and sector-wide events always pass. |
 | Tier 2 — Quick score | Hourly on Tier 1 hits | ~$0.001/call | Fast Claude score 0–100. Applies active category weights so high-performing categories score higher. |
-| Tier 3 — Deep analysis | On score ≥ 72 | ~$0.02/call | Full options recommendation with entry, profit target, stop loss, time stop, IV warning, portfolio impact, correlation alerts. |
+| Tier 3 — Deep analysis | On score ≥ 72 | ~$0.02/call | Full options recommendation using real Alpaca contracts with live greeks. Entry, profit target, stop loss, time stop, IV warning, portfolio impact, correlation alerts. Max 3 concurrent Claude calls (rate-limit safe). |
 | Tier 4 — Weekly synthesis | Every Sunday 8pm ET | ~$0.10 | Claude reviews the week, adjusts category weights up AND down intelligently with hard constraints. Triggers cleanup. |
 
 ## Breaking scan vs full scan
@@ -88,6 +90,26 @@ market-intelligence/
 **Full scan** (every 60 min): Hits all sources → Tier 1 → Tier 2 → Tier 3.
 
 **Breaking scan** (every 15 min): Hits RSS only → Tier 1 only → **zero Claude cost**. Only escalates directly to Tier 3 if score_boost ≥ 40 (e.g. Ackman + your ticker, bankruptcy of held stock). Everything else waits for the next full scan.
+
+## Live options chain (Alpaca integration)
+
+Both Tier 3 automated signals and manual lookups fetch a real options chain from Alpaca for the primary ticker:
+
+- **Strike range**: ±18% from current price
+- **Expiry range**: 21–90 days out
+- **Filters**: spread > 25% of mid → skipped; IV > 300% or < 5% → skipped (catches deep-ITM Black-Scholes artifacts)
+- **Greeks**: delta, gamma, theta (per day), vega — computed via Black-Scholes with IV back-solved from market mid-price
+- **Output**: 2 best calls + 2 best puts passed to Claude with bid/ask, spread %, IV %, cost per contract
+- **Claude's job**: select the best 1–2 contracts and explain the greek-based reasoning (e.g. why this delta/theta tradeoff fits the catalyst timeline)
+- **Fallback**: if ticker not optionable or price unavailable, options_plays returns `[]` — no hallucinated strikes
+
+The `alpaca_symbol` field in each options play (e.g. `NVDA260620C00145000`) is the exact symbol needed to place an order via Alpaca.
+
+### Dashboard indicators
+
+Every signal shows the data source inline:
+- **Price**: green `$602.61` = live from yfinance · amber `~$602 (est.)` = Claude estimate (yfinance failed)
+- **Options**: `LIVE · ALPACA` = real contracts with greeks · `NOT OPTIONABLE` = no liquid options on Alpaca · `NO SUITABLE CONTRACTS` = chain fetched but Claude rejected all · `PRICE UNAVAILABLE` = couldn't fetch price so chain skipped
 
 ## Self-improvement system
 
@@ -112,11 +134,11 @@ Every signal includes:
 
 ## Hedge funds and investors tracked
 
-Ackman (Pershing Square), Cathie Wood (ARK), Buffett (Berkshire), Druckenmiller, Soros, Michael Burry, Dalio (Bridgewater), Ken Griffin (Citadel), Steve Cohen (Point72), Chase Coleman (Tiger Global), Philippe Laffont (Coatue), Dan Sundheim (D1), David Einhorn (Greenlight), Dan Loeb (Third Point), Carl Icahn, Paul Singer (Elliott), Jim Simons (Renaissance), Masayoshi Son (SoftBank), KKR, Apollo, Blackstone, BlackRock, Vanguard, Fidelity, a16z, Sequoia.
+Ackman (Pershing Square), Cathie Wood (ARK), Buffett (Berkshire), Druckenmiller, Soros, Michael Burry, Dalio (Bridgewater), Ken Griffin (Citadel), Steve Cohen (Point72), Chase Coleman (Tiger Global), Philippe Laffont (Coatue), Dan Sundheim (D1), David Einhorn (Greenlight), Dan Loeb (Third Point), Carl Icahn, Paul Singer (Elliott), Jim Simons (Renaissance), Masayoshi Son (SoftBank), KKR, Apollo, Blackstone, BlackRock, Vanguard, Fidelity.
 
 ## Manual ticker lookup
 
-Type any ticker + optional context in the dashboard. Claude fetches recent news in parallel and returns a full analysis in 12–18 seconds including entry strategy, profit target, stop loss, time stop, and IV warning.
+Type any ticker or company name in the dashboard (e.g. "sandisk" resolves to SNDK automatically). Claude fetches recent news and the live Alpaca options chain in parallel, returning a full analysis with real tradeable contracts, entry strategy, profit target, stop loss, time stop, IV warning, and real-time price via yfinance.
 
 ## Data TTL and cleanup
 
@@ -132,7 +154,7 @@ Every Sunday 8:30pm ET:
 - **MY SECTORS** filter — priority sectors + score ≥ 90 only
 - **HIGH CONVICTION** filter — score ≥ 80 only
 - **LOOKUPS** tab — all your manual analyses
-- Full reasoning chain, options plays with entry/exit strategy in detail panel
+- Full reasoning chain, options plays with entry/exit strategy and greeks in detail panel
 - Mobile responsive — tap to expand, back button to return
 - Auto-refreshes every 30 seconds
 
@@ -159,13 +181,14 @@ Required keys:
 - `TELEGRAM_BOT_TOKEN` — from @BotFather
 - `TELEGRAM_CHAT_ID` — intelligence group chat ID (negative number)
 - `NEWS_API_KEY` — from newsapi.org (free tier)
+- `ALPACA_API_KEY` — from alpaca.markets (for live options chain with greeks)
+- `ALPACA_SECRET_KEY` — from alpaca.markets
 
 Optional tuning:
 - `QUICK_SCORE_THRESHOLD` — default 65
 - `DEEP_SCORE_THRESHOLD` — default 72
 - `BREAKING_CRITICAL_THRESHOLD` — default 40
-- `SCAN_INTERVAL_MINUTES` — default 60
-- `BREAKING_SCAN_MINUTES` — default 15
+- `MAX_ARTICLE_AGE_HOURS` — default 48
 
 ### 3. Run locally
 
@@ -179,7 +202,7 @@ uvicorn main:app --port 8001
 GET  /api/signals?days=7&limit=200   # Signals with time filter
 GET  /api/stats                       # Today's summary
 GET  /api/weights                     # Current category weights
-POST /api/lookup                      # Manual ticker analysis
+POST /api/lookup                      # Manual ticker/company analysis
 POST /api/scan/trigger                # Manually trigger a scan
 GET  /health                          # Health + scheduled jobs
 GET  /docs                            # Interactive API docs
@@ -198,7 +221,8 @@ GET  /docs                            # Interactive API docs
 | Vercel (dashboard) | Free |
 | Claude API (all tiers) | ~$3–5/month |
 | NewsAPI | Free |
+| Alpaca (options data) | Free |
 | SEC EDGAR + Reddit | Free |
 | **Total** | **~$3–5/month** |
 
-Cost controls built in: startup scan skipped on redeploy if last scan < 50 min ago · breaking scan never calls Claude unless score_boost ≥ 40 · Tier 2→3 threshold at 72 · generic events require watchlist ticker at Tier 1.
+Cost controls built in: startup scan skipped on redeploy · breaking scan never calls Claude unless score_boost ≥ 40 · Tier 2→3 threshold at 72 · generic events require watchlist ticker or company name at Tier 1 · Tier 3 capped at 3 concurrent Claude calls.
