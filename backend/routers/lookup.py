@@ -206,6 +206,7 @@ Return this exact JSON structure:
             result = json.loads(text)
             result["is_manual_lookup"] = True
             result["lookup_ticker"]    = ticker
+            result["price_source"]     = "live" if current_price else "estimated"
             return result
 
         except json.JSONDecodeError:

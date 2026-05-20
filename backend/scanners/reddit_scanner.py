@@ -33,7 +33,7 @@ async def _scan_with_json_api() -> list:
     ticker_counts = Counter()
 
     async with httpx.AsyncClient(
-        headers={"User-Agent": "MarketIntelBot/1.0"},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; MarketIntelBot/1.0; +https://github.com/Ashwinshankar98/market-intelligence)"},
         timeout=10,
         follow_redirects=True
     ) as client:

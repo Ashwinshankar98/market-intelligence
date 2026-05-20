@@ -252,7 +252,11 @@ function SignalDetail({ signal, onBack, isMobile }) {
         <div style={{ fontSize: 13, fontWeight: 500, color: "#f1f5f9", lineHeight: 1.6, marginBottom: 6 }}>{signal.headline || signal.summary_one_line}</div>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           <span style={{ fontSize: 11, color: "#555" }}>{signal.sector}</span>
-          {signal.current_price ? <span style={{ fontSize: 11, color: "#4ade80" }}>Current: ${signal.current_price}</span> : null}
+          {signal.current_price ? (
+            signal.price_source === "estimated"
+              ? <span style={{ fontSize: 11, color: "#f59e0b" }}>~${signal.current_price} <span style={{ fontSize: 9, opacity: 0.7 }}>(est.)</span></span>
+              : <span style={{ fontSize: 11, color: "#4ade80" }}>${signal.current_price}</span>
+          ) : null}
           <span style={{ fontSize: 11, color: "#555" }}>{signal.created_at?.slice(0, 16)} UTC</span>
         </div>
       </div>
@@ -362,14 +366,23 @@ function SignalDetail({ signal, onBack, isMobile }) {
       ) : null}
 
       {/* Options plays */}
-      {plays.length > 0 ? (
-        <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 9, color: "#555", letterSpacing: 3, marginBottom: 8 }}>OPTIONS PLAYS</div>
-          {plays.map((play, i) => (
-            <OptionsPlay key={i} play={play} signalContext={signalContext} />
-          ))}
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <div style={{ fontSize: 9, color: "#555", letterSpacing: 3 }}>OPTIONS PLAYS</div>
+          {signal.options_source === "alpaca" && plays.length > 0 &&
+            <span style={{ fontSize: 9, color: "#4ade80", background: "#052e16", padding: "1px 6px", borderRadius: 3 }}>LIVE · ALPACA</span>}
+          {signal.options_source === "no_price" &&
+            <span style={{ fontSize: 9, color: "#f59e0b", background: "#1c1000", padding: "1px 6px", borderRadius: 3 }}>PRICE UNAVAILABLE</span>}
+          {(signal.options_source === "no_chain" || signal.options_source === "error") &&
+            <span style={{ fontSize: 9, color: "#888", background: "#0f0f1a", padding: "1px 6px", borderRadius: 3 }}>NOT OPTIONABLE</span>}
+          {signal.options_source === "alpaca" && plays.length === 0 &&
+            <span style={{ fontSize: 9, color: "#888", background: "#0f0f1a", padding: "1px 6px", borderRadius: 3 }}>NO SUITABLE CONTRACTS</span>}
         </div>
-      ) : null}
+        {plays.length > 0
+          ? plays.map((play, i) => <OptionsPlay key={i} play={play} signalContext={signalContext} />)
+          : <div style={{ fontSize: 11, color: "#444", fontStyle: "italic" }}>No options plays for this signal.</div>
+        }
+      </div>
 
       {/* Meta */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14 }}>

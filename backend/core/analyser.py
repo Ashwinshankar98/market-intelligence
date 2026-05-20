@@ -124,11 +124,17 @@ def deep_analysis(headline: str, summary: str, category: str,
                 price_context[t] = p
         except Exception:
             pass
+
+    primary_ticker_for_price = tickers[0] if tickers else None
+    price_is_live = primary_ticker_for_price in price_context
+
     price_str = ""
     if price_context:
         price_str = "\nCurrent live prices:\n"
         for t, p in price_context.items():
             price_str += f"  {t}: ${p}\n"
+    elif primary_ticker_for_price:
+        price_str = f"\nNo live price available for {primary_ticker_for_price} — use your best estimate for current_price in the JSON.\n"
 
     pos_str = ""
     if position_context:
@@ -148,15 +154,29 @@ def deep_analysis(headline: str, summary: str, category: str,
                     pos_str += f"  {t} affects your: {', '.join(c)}\n"
 
     # Fetch real options chain from Alpaca for the primary ticker
-    options_str = ""
+    options_str    = ""
     real_contracts = []
+    options_source = "no_chain"   # default; updated below
     primary_ticker = tickers[0] if tickers else None
     primary_price  = price_context.get(primary_ticker, 0) if primary_ticker else 0
-    if primary_ticker and primary_price > 0:
+
+    if not primary_ticker:
+        options_source = "no_ticker"
+        print(f"[Options] No primary ticker — skipping chain fetch")
+    elif primary_price <= 0:
+        options_source = "no_price"
+        print(f"[Options] Price fetch failed for {primary_ticker} — skipping chain fetch")
+    else:
         try:
             from core.options_chain import get_options_chain
             real_contracts = get_options_chain(primary_ticker, primary_price)
+            if real_contracts:
+                options_source = "alpaca"
+            else:
+                options_source = "no_chain"
+                print(f"[Options] Chain empty for {primary_ticker} (not optionable or all contracts filtered out)")
         except Exception as e:
+            options_source = "error"
             print(f"[Options] Chain fetch failed for {primary_ticker}: {e}")
 
     if real_contracts:
@@ -284,10 +304,15 @@ Respond ONLY with raw JSON. No markdown. Start with open brace.
             )
             text = _clean_json(response.content[0].text)
             try:
-                return json.loads(text)
+                result = json.loads(text)
+                result["options_source"] = options_source
+                result["price_source"]   = "live" if price_is_live else "estimated"
+                return result
             except Exception:
                 result = _salvage_json(response.content[0].text)
                 if result and result.get("score", 0) > 0:
+                    result["options_source"] = options_source
+                    result["price_source"]   = "live" if price_is_live else "estimated"
                     return result
                 if attempt < 2:
                     time.sleep(2 ** attempt)
@@ -299,6 +324,8 @@ Respond ONLY with raw JSON. No markdown. Start with open brace.
                 continue
             result = _salvage_json(response.content[0].text if response else "")
             if result:
+                result["options_source"] = options_source
+                result["price_source"]   = "live" if price_is_live else "estimated"
                 return result
             return {"score": 0, "error": str(e)[:200]}
     return {"score": 0, "error": "max retries"}

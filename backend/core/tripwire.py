@@ -179,9 +179,10 @@ def run_tripwire(text: str) -> dict:
     passed      = False
 
     raw_tickers = TICKER_PATTERN.findall(text)
-    # For common-word tickers, only count them if they appear uppercase in the source
+    # For common-word tickers, only count them if they appear uppercase in the source.
+    # Always store tickers as uppercase so downstream (Alpaca, yfinance) gets "META" not "Meta".
     tickers = list(set(
-        t for t in raw_tickers
+        t.upper() for t in raw_tickers
         if t.upper() not in _UPPERCASE_REQUIRED or _UPPERCASE_TICKER_PATTERN.search(text)
     ))
     investors = list(set(FAMOUS_INVESTORS_PATTERN.findall(text_lower)))
