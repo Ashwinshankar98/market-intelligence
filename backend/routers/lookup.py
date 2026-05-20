@@ -272,7 +272,7 @@ Return this exact JSON structure:
     def _call_claude():
         return client.messages.create(
             model=MODEL,
-            max_tokens=2000,
+            max_tokens=6000,
             timeout=60.0,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -285,29 +285,36 @@ Return this exact JSON structure:
                 loop.run_in_executor(None, _call_claude),
                 timeout=65.0
             )
-            text   = _clean_json(response.content[0].text)
+            stop_reason = response.stop_reason
+            raw_text    = response.content[0].text
+            print(f"[Lookup] Claude response: stop_reason={stop_reason} len={len(raw_text)} ({elapsed()}s)")
+            if stop_reason == "max_tokens":
+                print(f"[Lookup] WARNING: response truncated at max_tokens — JSON will be incomplete")
+            text   = _clean_json(raw_text)
             result = json.loads(text)
             break
 
         except asyncio.TimeoutError:
-            err_msg = "Request timed out"
+            print(f"[Lookup] Claude asyncio timeout on attempt {attempt+1} ({elapsed()}s)")
             if attempt < 1:
                 yield {"type": "progress", "step": "claude", "msg": "Timeout — retrying...", "done": False}
                 await asyncio.sleep(1)
                 continue
             yield {"type": "progress", "step": "claude",
-                   "msg": f"Failed: {err_msg}", "elapsed": elapsed(), "done": True, "error": True}
+                   "msg": "Failed: timed out", "elapsed": elapsed(), "done": True, "error": True}
             yield {"type": "result", "data": {
-                "error": err_msg, "score": 0, "is_manual_lookup": True,
+                "error": "Request timed out", "score": 0, "is_manual_lookup": True,
                 "primary_ticker": ticker, "headline": f"{ticker} analysis timed out"
             }}
             return
 
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            raw = response.content[0].text if response else ""
+            print(f"[Lookup] JSON decode error attempt {attempt+1}: {e} | stop_reason={getattr(response, 'stop_reason', '?')} | tail={raw[-200:]!r}")
             try:
-                raw    = response.content[0].text if response else ""
                 result = _salvage_json(raw)
                 if result and result.get("primary_ticker"):
+                    print(f"[Lookup] Salvaged JSON successfully")
                     break
             except Exception:
                 pass
@@ -316,6 +323,7 @@ Return this exact JSON structure:
                 continue
 
         except Exception as e:
+            print(f"[Lookup] Claude exception attempt {attempt+1}: {type(e).__name__}: {e} ({elapsed()}s)")
             if attempt < 1:
                 await asyncio.sleep(1)
                 continue
@@ -331,7 +339,7 @@ Return this exact JSON structure:
                     "headline": f"{ticker} analysis failed"
                 }
                 yield {"type": "progress", "step": "claude",
-                       "msg": f"Failed: {str(e)[:60]}", "elapsed": elapsed(), "done": True, "error": True}
+                       "msg": f"Failed: {type(e).__name__}", "elapsed": elapsed(), "done": True, "error": True}
                 yield {"type": "result", "data": err}
                 return
 
