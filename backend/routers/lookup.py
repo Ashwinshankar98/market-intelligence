@@ -122,8 +122,22 @@ async def _do_lookup(body: dict):
     if isinstance(articles, Exception):      articles      = []
     if isinstance(current_price, Exception): current_price = None
 
-    price_val  = current_price if current_price else 0
-    price_str  = f"${current_price}" if current_price else "estimate from your knowledge"
+    # If yfinance failed, try Alpaca stock quote as fallback
+    if not current_price:
+        try:
+            from core.options_chain import _fetch_price_from_alpaca
+            api_key = os.getenv("ALPACA_API_KEY", "")
+            secret  = os.getenv("ALPACA_SECRET_KEY", "")
+            if api_key and secret:
+                alpaca_price = _fetch_price_from_alpaca(ticker, api_key, secret)
+                if alpaca_price > 0:
+                    current_price = alpaca_price
+                    print(f"[Lookup] Using Alpaca price fallback for {ticker}: ${current_price}")
+        except Exception:
+            pass
+
+    price_val    = current_price if current_price else 0
+    price_str    = f"${current_price}" if current_price else "estimate from your knowledge"
     price_source = "live" if current_price else "estimated"
 
     news_lines = [f"[{a.get('date','')}] {a.get('title','')}" for a in (articles or [])[:5]]

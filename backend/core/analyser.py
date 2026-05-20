@@ -163,12 +163,10 @@ def deep_analysis(headline: str, summary: str, category: str,
     if not primary_ticker:
         options_source = "no_ticker"
         print(f"[Options] No primary ticker — skipping chain fetch")
-    elif primary_price <= 0:
-        options_source = "no_price"
-        print(f"[Options] Price fetch failed for {primary_ticker} — skipping chain fetch")
     else:
         try:
             from core.options_chain import get_options_chain
+            # Pass primary_price (may be 0 if yfinance failed — options_chain handles fallback via Alpaca)
             real_contracts = get_options_chain(primary_ticker, primary_price)
             if real_contracts:
                 options_source = "alpaca"

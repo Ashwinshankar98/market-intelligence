@@ -74,12 +74,29 @@ def _time_to_expiry(expiry: date) -> float:
 
 _INVALID_TICKERS = {"ON", "NET", "BY", "AT", "OR", "IN", "RR", "MP", "SK"}
 
+def _fetch_price_from_alpaca(ticker: str, api_key: str, secret: str) -> float:
+    """Fallback: get current stock price from Alpaca when yfinance fails."""
+    try:
+        from alpaca.data.historical.stock import StockHistoricalDataClient
+        from alpaca.data.requests import StockLatestQuoteRequest
+        client = StockHistoricalDataClient(api_key, secret)
+        req    = StockLatestQuoteRequest(symbol_or_symbols=ticker)
+        quotes = client.get_stock_latest_quote(req)
+        q = quotes.get(ticker)
+        if q and q.ask_price and q.bid_price:
+            return round((float(q.ask_price) + float(q.bid_price)) / 2, 2)
+    except Exception as e:
+        print(f"[Options] Alpaca price fallback failed for {ticker}: {e}")
+    return 0.0
+
+
 def get_options_chain(ticker: str, current_price: float) -> list[dict]:
     """
     Fetch real call + put candidates for ticker from Alpaca.
     Returns up to MAX_CANDIDATES contracts (mix of calls and puts)
     sorted by how close they are to ATM, with greeks and bid/ask.
     Returns [] if Alpaca keys not configured or ticker not optionable.
+    If current_price is 0 (yfinance failed), falls back to Alpaca stock quote.
     """
     # Skip common-word false-positive tickers that Alpaca will reject
     if not ticker or len(ticker) < 2 or ticker.upper() in _INVALID_TICKERS:
@@ -89,6 +106,14 @@ def get_options_chain(ticker: str, current_price: float) -> list[dict]:
     secret  = os.getenv("ALPACA_SECRET_KEY", "")
     if not api_key or not secret:
         return []
+
+    # If yfinance failed, try Alpaca for the price before giving up
+    if current_price <= 0:
+        current_price = _fetch_price_from_alpaca(ticker, api_key, secret)
+        if current_price <= 0:
+            print(f"[Options] No price available for {ticker} from yfinance or Alpaca — skipping chain")
+            return []
+        print(f"[Options] Using Alpaca price fallback for {ticker}: ${current_price}")
 
     try:
         from alpaca.trading.client import TradingClient
